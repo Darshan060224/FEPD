@@ -1,0 +1,417 @@
+# FEPD Forensic Classification Rulebook
+# Deterministic rule engine for event classification
+# Version: 1.0.0
+# Compliance: NIST SP 800-86, ISO/IEC 27037
+
+# ============================================================================
+# CLASSIFICATION CATEGORIES
+# ============================================================================
+classification_types:
+  USER_ACTIVITY:
+    description: "Normal user activity and system operations"
+    color: "#3C7DD9"
+    severity_range: [1, 2]
+    
+  REMOTE_ACCESS:
+    description: "Remote desktop, SSH, network logon events"
+    color: "#E8C547"
+    severity_range: [2, 4]
+    
+  PERSISTENCE:
+    description: "Techniques to maintain presence in system"
+    color: "#E8C547"
+    severity_range: [3, 4]
+    
+  STAGING:
+    description: "Data staging, compression, archiving for exfiltration"
+    color: "#E8C547"
+    severity_range: [3, 5]
+    
+  EXFIL_PREP:
+    description: "Exfiltration preparation indicators"
+    color: "#22B573"
+    severity_range: [4, 5]
+    
+  ANTI_FORENSICS:
+    description: "Evidence destruction, log clearing, timestomping"
+    color: "#D64550"
+    severity_range: [4, 5]
+    
+  NORMAL:
+    description: "Benign system events"
+    color: "#E9E9E9"
+    severity_range: [1, 1]
+
+# ============================================================================
+# EVTX EVENT LOG RULES
+# ============================================================================
+evtx_rules:
+  # Logon Events
+  - event_id: 4624
+    provider: "Microsoft-Windows-Security-Auditing"
+    classification:
+      - condition: "logon_type == 10"
+        class: "REMOTE_ACCESS"
+        severity: 3
+        rationale: "Remote Desktop (RDP) logon detected"
+        
+      - condition: "logon_type == 3"
+        class: "REMOTE_ACCESS"
+        severity: 2
+        rationale: "Network logon (file share access)"
+        
+      - condition: "logon_type == 2"
+        class: "USER_ACTIVITY"
+        severity: 1
+        rationale: "Interactive console logon"
+        
+      - condition: "default"
+        class: "USER_ACTIVITY"
+        severity: 1
+        rationale: "User logon event"
+  
+  # Failed Logon
+  - event_id: 4625
+    provider: "Microsoft-Windows-Security-Auditing"
+    classification:
+      - condition: "count_in_timewindow(5min) > 5"
+        class: "REMOTE_ACCESS"
+        severity: 4
+        rationale: "Multiple failed logon attempts (brute force indicator)"
+        
+      - condition: "default"
+        class: "USER_ACTIVITY"
+        severity: 2
+        rationale: "Failed logon attempt"
+  
+  # Log Clearing - Critical Anti-Forensics
+  - event_id: 1102
+    provider: "Microsoft-Windows-Eventlog"
+    classification:
+      - condition: "always"
+        class: "ANTI_FORENSICS"
+        severity: 5
+        rationale: "Security audit log cleared - Evidence destruction"
+  
+  - event_id: 104
+    provider: "Microsoft-Windows-Eventlog"
+    classification:
+      - condition: "always"
+        class: "ANTI_FORENSICS"
+        severity: 5
+        rationale: "Event log cleared - Evidence destruction"
+  
+  # Process Execution
+  - event_id: 4688
+    provider: "Microsoft-Windows-Security-Auditing"
+    classification:
+      - condition: "process_name contains 'powershell.exe' and command_line contains '-enc'"
+        class: "STAGING"
+        severity: 4
+        rationale: "Encoded PowerShell command (obfuscation)"
+        
+      - condition: "process_name in ['curl.exe', 'wget.exe', 'bitsadmin.exe']"
+        class: "EXFIL_PREP"
+        severity: 4
+        rationale: "Download tool execution (potential C2 communication)"
+        
+      - condition: "process_name in ['7z.exe', 'winzip.exe', 'winrar.exe', 'rar.exe']"
+        class: "STAGING"
+        severity: 3
+        rationale: "Compression tool (potential data staging)"
+        
+      - condition: "process_name in ['reg.exe', 'regedit.exe']"
+        class: "PERSISTENCE"
+        severity: 3
+        rationale: "Registry modification tool"
+        
+      - condition: "default"
+        class: "USER_ACTIVITY"
+        severity: 1
+        rationale: "Process execution"
+  
+  # Service Installation
+  - event_id: 7045
+    provider: "Service Control Manager"
+    classification:
+      - condition: "service_file_name contains 'TEMP' or service_file_name contains 'AppData'"
+        class: "PERSISTENCE"
+        severity: 4
+        rationale: "Service installed from suspicious location"
+        
+      - condition: "default"
+        class: "PERSISTENCE"
+        severity: 3
+        rationale: "New service installed"
+  
+  # System Shutdown
+  - event_id: 6008
+    provider: "EventLog"
+    classification:
+      - condition: "always"
+        class: "ANTI_FORENSICS"
+        severity: 3
+        rationale: "Unexpected system shutdown"
+  
+  # Account Created
+  - event_id: 4720
+    provider: "Microsoft-Windows-Security-Auditing"
+    classification:
+      - condition: "always"
+        class: "PERSISTENCE"
+        severity: 3
+        rationale: "New user account created"
+  
+  # Scheduled Task Created
+  - event_id: 4698
+    provider: "Microsoft-Windows-Security-Auditing"
+    classification:
+      - condition: "always"
+        class: "PERSISTENCE"
+        severity: 3
+        rationale: "Scheduled task created for persistence"
+
+# ============================================================================
+# REGISTRY RULES
+# ============================================================================
+registry_rules:
+  # Run Keys (Persistence)
+  - key_path: "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+    classification:
+      - condition: "value_name != '' and value_data contains 'TEMP'"
+        class: "PERSISTENCE"
+        severity: 4
+        rationale: "Run key pointing to TEMP directory"
+        
+      - condition: "default"
+        class: "PERSISTENCE"
+        severity: 3
+        rationale: "Run key modification for autostart"
+  
+  - key_path: "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+    classification:
+      - condition: "always"
+        class: "PERSISTENCE"
+        severity: 3
+        rationale: "RunOnce key modification"
+  
+  # Services
+  - key_path: "SYSTEM\\CurrentControlSet\\Services"
+    classification:
+      - condition: "always"
+        class: "PERSISTENCE"
+        severity: 3
+        rationale: "Service configuration modified"
+  
+  # USB Device History
+  - key_path: "SYSTEM\\CurrentControlSet\\Enum\\USBSTOR"
+    classification:
+      - condition: "always"
+        class: "EXFIL_PREP"
+        severity: 3
+        rationale: "USB storage device connected (data exfiltration vector)"
+
+# ============================================================================
+# PREFETCH RULES
+# ============================================================================
+prefetch_rules:
+  # Compression Tools
+  - exe_name_pattern: ["7z.exe", "winzip.exe", "winrar.exe", "rar.exe"]
+    classification:
+      - condition: "run_count > 1"
+        class: "STAGING"
+        severity: 4
+        rationale: "Compression tool executed multiple times"
+        
+      - condition: "default"
+        class: "STAGING"
+        severity: 3
+        rationale: "Compression tool executed"
+  
+  # Network Tools
+  - exe_name_pattern: ["curl.exe", "wget.exe", "bitsadmin.exe", "certutil.exe"]
+    classification:
+      - condition: "always"
+        class: "EXFIL_PREP"
+        severity: 4
+        rationale: "Network download tool executed"
+  
+  # Remote Access
+  - exe_name_pattern: ["mstsc.exe", "teamviewer.exe", "anydesk.exe"]
+    classification:
+      - condition: "always"
+        class: "REMOTE_ACCESS"
+        severity: 3
+        rationale: "Remote access tool executed"
+  
+  # PowerShell
+  - exe_name_pattern: ["powershell.exe", "pwsh.exe"]
+    classification:
+      - condition: "run_count > 10"
+        class: "STAGING"
+        severity: 3
+        rationale: "PowerShell executed frequently (scripting activity)"
+        
+      - condition: "default"
+        class: "USER_ACTIVITY"
+        severity: 2
+        rationale: "PowerShell execution"
+  
+  # CMD
+  - exe_name_pattern: ["cmd.exe"]
+    classification:
+      - condition: "run_count > 20"
+        class: "USER_ACTIVITY"
+        severity: 2
+        rationale: "Command prompt used frequently"
+        
+      - condition: "default"
+        class: "NORMAL"
+        severity: 1
+        rationale: "Command prompt usage"
+
+# ============================================================================
+# MFT / FILE ACTIVITY RULES
+# ============================================================================
+mft_rules:
+  # Mass File Modifications
+  - condition: "event_type == 'FILE_MODIFIED' and count_in_timewindow(1min) > 100"
+    classification:
+      class: "STAGING"
+      severity: 4
+      rationale: "Mass file modifications in short time (ransomware indicator)"
+  
+  # Mass File Deletions
+  - condition: "event_type == 'FILE_DELETED' and count_in_timewindow(5min) > 50"
+    classification:
+      class: "ANTI_FORENSICS"
+      severity: 5
+      rationale: "Mass file deletions (evidence destruction)"
+  
+  # Suspicious File Extensions
+  - condition: "filepath ends_with ['.ps1', '.bat', '.vbs', '.js']"
+    classification:
+      class: "STAGING"
+      severity: 3
+      rationale: "Script file created/modified"
+  
+  # Archive Files in Temp
+  - condition: "filepath contains 'TEMP' and filepath ends_with ['.zip', '.7z', '.rar']"
+    classification:
+      class: "STAGING"
+      severity: 4
+      rationale: "Archive file in temporary directory (staging)"
+  
+  # Executable in User Directory
+  - condition: "filepath contains 'AppData' and filepath ends_with '.exe'"
+    classification:
+      class: "PERSISTENCE"
+      severity: 3
+      rationale: "Executable in user AppData directory"
+
+# ============================================================================
+# BROWSER HISTORY RULES
+# ============================================================================
+browser_rules:
+  # File Sharing Sites
+  - url_pattern: ["mega.nz", "dropbox.com", "wetransfer.com", "anonfiles.com"]
+    classification:
+      class: "EXFIL_PREP"
+      severity: 4
+      rationale: "File sharing service accessed (potential exfiltration)"
+  
+  # Webmail Access
+  - url_pattern: ["mail.google.com", "outlook.live.com", "mail.yahoo.com"]
+    classification:
+      class: "EXFIL_PREP"
+      severity: 3
+      rationale: "Webmail accessed (potential exfiltration vector)"
+  
+  # Pastebin Sites
+  - url_pattern: ["pastebin.com", "paste.ee", "justpaste.it"]
+    classification:
+      class: "EXFIL_PREP"
+      severity: 3
+      rationale: "Paste site accessed (data leakage vector)"
+  
+  # VPN/Proxy Sites
+  - url_pattern: ["nordvpn.com", "protonvpn.com", "hide.me"]
+    classification:
+      class: "ANTI_FORENSICS"
+      severity: 3
+      rationale: "VPN/proxy service accessed (hiding activity)"
+
+# ============================================================================
+# TIMELINE CORRELATION RULES
+# ============================================================================
+correlation_rules:
+  # Attack Sequence Detection
+  - name: "RDP_to_Staging_to_Exfil"
+    description: "Remote access followed by staging and exfiltration"
+    sequence:
+      - class: "REMOTE_ACCESS"
+        within_minutes: 10
+      - class: "STAGING"
+        within_minutes: 30
+      - class: "EXFIL_PREP"
+    result:
+      upgrade_severity: +2
+      add_note: "Potential coordinated attack sequence detected"
+  
+  - name: "Log_Clear_After_Activity"
+    description: "Log clearing shortly after suspicious activity"
+    sequence:
+      - class: ["STAGING", "EXFIL_PREP"]
+        within_minutes: 60
+      - class: "ANTI_FORENSICS"
+    result:
+      upgrade_severity: +1
+      add_note: "Evidence destruction after suspicious activity"
+
+# ============================================================================
+# SEVERITY SCORING ADJUSTMENTS
+# ============================================================================
+severity_modifiers:
+  # Time-based
+  - condition: "timestamp between 00:00 and 05:00"
+    modifier: +1
+    reason: "Activity during off-hours"
+  
+  - condition: "timestamp on weekend"
+    modifier: +1
+    reason: "Activity during weekend"
+  
+  # Frequency-based
+  - condition: "same_event_count_in_hour > 10"
+    modifier: +1
+    reason: "High frequency of same event"
+  
+  # User-based
+  - condition: "user_account == 'SYSTEM' and event_type != 'SERVICE'"
+    modifier: +1
+    reason: "SYSTEM account performing unusual activity"
+
+# ============================================================================
+# ALLOWLIST (Reduce False Positives)
+# ============================================================================
+allowlist:
+  processes:
+    - "C:\\Windows\\System32\\svchost.exe"
+    - "C:\\Windows\\System32\\services.exe"
+    - "C:\\Windows\\System32\\lsass.exe"
+  
+  registry_keys:
+    - "SOFTWARE\\Microsoft\\Windows Defender"
+    - "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer"
+  
+  known_benign_hashes:
+    # Add known good file hashes here
+    - "d41d8cd98f00b204e9800998ecf8427e"  # Example
+
+# ============================================================================
+# NOTES
+# ============================================================================
+# - All rules are deterministic (no ML/AI)
+# - Rules are legally defensible and explainable
+# - Add custom rules in custom_rules.yaml
+# - Do not modify this file directly in production

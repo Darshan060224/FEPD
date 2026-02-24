@@ -1,0 +1,152 @@
+# FEPD - Forensic Evidence Parser Dashboard
+# Git Ignore Configuration
+# Only sensitive / generated files are excluded.
+
+# ============================================================================
+# PYTHON BYTECODE & CACHE
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# ============================================================================
+# VIRTUAL ENVIRONMENTS
+# ============================================================================
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# ============================================================================
+# SENSITIVE: CREDENTIALS, KEYS & SECRETS
+# ============================================================================
+# Environment files (often contain API keys / passwords)
+.env.*
+.env.local
+.env.production
+.env.development
+.env.test
+
+# Keys and certificates
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+*.keystore
+*.jks
+
+# Credentials / passwords / tokens
+credentials.json
+secrets.yaml
+*.secret
+passwords.txt
+auth.json
+token.txt
+api_keys.txt
+*.token
+
+# SSH keys
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+known_hosts
+
+# ============================================================================
+# SENSITIVE: FORENSIC EVIDENCE & CASE DATA
+# ============================================================================
+# Forensic disk images (NEVER commit real evidence)
+*.E01
+*.E02
+*.E03
+*.E04
+*.E05
+*.E06
+*.E07
+*.E08
+*.E09
+*.e01
+*.001
+*.raw
+*.dd
+*.aff
+*.afd
+*.vmdk
+
+# ---------- Case data (large artifacts, carved files, reports) ----------
+cases/
+!cases/index.json
+
+# ---------- Data folder (forensic images, processed data) ----------
+data/
+!data/cases/.gitkeep
+!data/workspace/.gitkeep
+dataa/
+
+# Chain of custody logs
+*.coc
+chain_of_custody*.log
+
+# Sensitive OS artifacts
+SAM
+SYSTEM
+SOFTWARE
+NTUSER.DAT
+*.evtx
+*.etl
+*.pf
+.bash_history
+
+# Memory dumps
+*.dmp
+*.mem
+memdump.mem
+pagefile.sys
+
+# Database files that may contain extracted evidence
+*.db
+*.sqlite
+*.sqlite3
+*.realm
+
+# ---------- Large binary / media artifacts ----------
+*.bin
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.pdf
+*.npz
+
+# ============================================================================
+# LOGS (may contain sensitive case info)
+# ============================================================================
+logs/
+*.log
+
+# ============================================================================
+# OS GENERATED
+# ============================================================================
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+
+# ============================================================================
+# IDE (optional, user-specific)
+# ============================================================================
+.idea/
+.vscode/

@@ -1,0 +1,238 @@
+# UML Activity Diagram - FEPD Complete Workflow
+
+```
+          ┌────────────────────┐
+          │      START         │
+          └───────┬────────────┘
+                  │
+                  v
+       ┌───────────────────────────┐
+       │  User selects disk image  │
+       └───────────┬───────────────┘
+                   │
+                   v
+     ┌──────────────────────────────┐
+     │ Compute SHA-256 hash of image│
+     └───────────┬──────────────────┘
+                 │
+                 v
+      ┌─────────────────────────────┐
+      │ Create CoC Entry for Image  │
+      └───────────┬─────────────────┘
+                  │
+                  v
+      ┌─────────────────────────────┐
+      │ Auto-discover artifacts     │
+      │ (EVTX/REG/PF/MFT/Browser)   │
+      └───────────┬─────────────────┘
+                  │
+                  v
+      ┌─────────────────────────────┐
+      │ Extract artifacts locally   │
+      └───────────┬─────────────────┘
+                  │
+                  v
+   ┌──────────────────────────────────┐
+   │ Compute SHA-256 hash per artifact│
+   └───────────┬──────────────────────┘
+               │
+               v
+    ┌────────────────────────────────┐
+    │ Create CoC Entries for Each    │
+    │ Extracted Artifact             │
+    └───────────┬────────────────────┘
+                │
+                v
+    ┌────────────────────────────────┐
+    │ Parse artifacts using:         │
+    │  - python-evtx (EVTX)          │
+    │  - python-registry (REG)       │
+    │  - python-prefetch-parser (PF) │
+    │  - analyzeMFT (MFT)            │
+    │  - sqlite3 (Browser DB)        │
+    └───────────┬────────────────────┘
+                │
+                v        ┌───────────────────┐
+     ┌──────────────────┤ Parser Error?     │
+     │                  └───────┬───────────┘
+     │ YES                      │ NO
+     v                          v
+┌─────────────────┐   ┌──────────────────────────────┐
+│ Log Error       │   │ Normalize parsed data        │
+│ Skip Artifact   │   │ (Unified event schema)       │
+│ Continue        │   └───────────┬──────────────────┘
+└─────────────────┘               │
+                                  v
+                       ┌─────────────────────────────┐
+                       │ Apply forensic rule engine  │
+                       │ (Classify + Severity)       │
+                       └───────────┬─────────────────┘
+                                   │
+                                   v
+                         ┌───────────────────────┐
+                         │ Show vertical timeline│
+                         │ (Color coded by class)│
+                         └───────────┬───────────┘
+                                     │
+                                     v
+                      ┌─────────────────────────────┐
+                      │ User reviews + filters data │
+                      │ - Time range filter         │
+                      │ - Keyword search            │
+                      │ - Event class filter        │
+                      │ - Toggle UTC/Local time     │
+                      └───────────┬─────────────────┘
+                                  │
+                                  v
+                      ┌─────────────────────────────┐
+                      │ User adds notes (optional)  │
+                      └───────────┬─────────────────┘
+                                  │
+                                  v
+                     ┌─────────────────────────────┐
+                     │ Generate PDF Final Report   │
+                     │ - Case summary              │
+                     │ - Image hash                │
+                     │ - Artifact hashes           │
+                     │ - Classification stats      │
+                     │ - Timeline event table      │
+                     │ - Analyst notes             │
+                     └───────────┬─────────────────┘
+                                 │
+                                 v
+                      ┌──────────────────────────┐
+                      │ Compute SHA-256 of report│
+                      └───────────┬──────────────┘
+                                  │
+                                  v
+                      ┌──────────────────────────┐
+                      │ Create CoC Entry for     │
+                      │ Generated Report         │
+                      └───────────┬──────────────┘
+                                  │
+                                  v
+                          ┌────────────────────┐
+                          │        END         │
+                          └────────────────────┘
+```
+
+---
+
+## Activity Flow Description
+
+### Phase 1: Image Ingestion
+**Activities:**
+1. User selects forensic disk image (E01/RAW/DD)
+2. System computes SHA-256 hash of entire image
+3. System creates first Chain-of-Custody entry
+
+**Duration:** 1-2 minutes for image validation + hashing (depends on image size)
+
+**Critical Decision Point:** None (linear flow)
+
+---
+
+### Phase 2: Artifact Discovery & Extraction
+**Activities:**
+4. System auto-scans for Windows artifacts in known paths
+5. System extracts discovered artifacts to case workspace
+6. System computes SHA-256 hash for each artifact
+7. System creates CoC entries for all artifacts
+
+**Duration:** 2-5 minutes (depends on artifact count and sizes)
+
+**Critical Decision Point:** None (automated batch process)
+
+---
+
+### Phase 3: Parsing
+**Activities:**
+8. System routes each artifact to appropriate parser
+9. Parsers extract structured data from binary formats
+
+**Duration:** 1-3 minutes (depends on artifact complexity)
+
+**Critical Decision Point:** **Parser Error?**
+- **YES** → Log error, skip artifact, continue with remaining
+- **NO** → Proceed to normalization
+
+**Error Handling Philosophy:** Graceful degradation - one corrupted artifact doesn't halt entire pipeline
+
+---
+
+### Phase 4: Normalization & Classification
+**Activities:**
+10. System normalizes all parsed records into unified schema
+11. System applies deterministic rule engine
+12. System assigns classifications and severity scores
+
+**Duration:** 10-20 seconds (even for 500,000 events)
+
+**Critical Decision Point:** None (deterministic classification - no ambiguity)
+
+---
+
+### Phase 5: Visualization & Review
+**Activities:**
+13. System renders vertical timeline (color-coded)
+14. User reviews timeline
+15. User applies filters (time range, keywords, event classes)
+16. User toggles UTC/Local time display
+17. User optionally adds notes to events
+
+**Duration:** Variable (analyst-dependent, typically 10-60 minutes)
+
+**Critical Decision Point:** Analyst decides when review is complete
+
+---
+
+### Phase 6: Reporting
+**Activities:**
+18. User clicks "Generate Report"
+19. System compiles all data into PDF/HTML
+20. System computes SHA-256 of report
+21. System creates final CoC entry
+
+**Duration:** 30-60 seconds
+
+**Critical Decision Point:** None (automated generation)
+
+---
+
+## Parallel Processing Opportunities
+
+The following activities can be parallelized for performance optimization:
+
+| Activity Pair | Parallelization Strategy |
+|---------------|-------------------------|
+| Artifact Extraction (Step 5-7) | Multi-threaded extraction of independent artifacts |
+| Artifact Parsing (Step 8) | Parse EVTX, Registry, Prefetch simultaneously |
+| Hashing Operations (Steps 2, 6, 20) | Stream-based hashing during read operations |
+
+---
+
+## Decision Points Summary
+
+| Decision | Condition | Action if True | Action if False |
+|----------|-----------|----------------|-----------------|
+| **Parser Error?** | Artifact corrupted or unsupported format | Log error, skip artifact, continue | Proceed to normalization |
+
+---
+
+## Error Recovery Mechanisms
+
+### Artifact-Level Errors
+- **Strategy:** Skip and continue
+- **Logging:** Error written to case log with artifact path
+- **Impact:** Partial analysis (remaining artifacts still processed)
+
+### Critical Errors (Rare)
+- **Image Unreadable:** Abort entire workflow, display error
+- **Insufficient Disk Space:** Pause extraction, prompt user
+- **CoC Log Write Failure:** Retry 3 times, then abort (integrity requirement)
+
+---
+
+**Document Version:** 1.0  
+**Diagram Type:** UML Activity Diagram  
+**Last Updated:** November 6, 2025

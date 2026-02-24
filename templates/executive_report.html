@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="{{ config.language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ config.title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: white;
+        }
+        
+        .header {
+            text-align: center;
+            padding: 40px 0;
+            border-bottom: 3px solid {{ config.colors.primary }};
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            color: {{ config.colors.primary }};
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header .subtitle {
+            color: #666;
+            font-size: 1.2em;
+        }
+        
+        .header .classification {
+            display: inline-block;
+            background: {{ config.colors.danger }};
+            color: white;
+            padding: 5px 15px;
+            border-radius: 3px;
+            margin-top: 20px;
+            font-weight: bold;
+        }
+        
+        .metadata {
+            background: #f9f9f9;
+            padding: 20px;
+            border-left: 4px solid {{ config.colors.secondary }};
+            margin-bottom: 30px;
+        }
+        
+        .metadata table {
+            width: 100%;
+        }
+        
+        .metadata td {
+            padding: 8px 0;
+        }
+        
+        .metadata td:first-child {
+            font-weight: bold;
+            width: 200px;
+        }
+        
+        .section {
+            margin-bottom: 40px;
+        }
+        
+        h2 {
+            color: {{ config.colors.primary }};
+            border-bottom: 2px solid {{ config.colors.secondary }};
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        
+        h3 {
+            color: {{ config.colors.secondary }};
+            margin: 20px 0 10px 0;
+        }
+        
+        .risk-score {
+            text-align: center;
+            padding: 30px;
+            background: linear-gradient(135deg, {{ config.colors.primary }}, {{ config.colors.secondary }});
+            color: white;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        
+        .risk-score .score {
+            font-size: 4em;
+            font-weight: bold;
+        }
+        
+        .risk-score .label {
+            font-size: 1.2em;
+        }
+        
+        .severity-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .severity-box {
+            text-align: center;
+            padding: 20px;
+            border-radius: 8px;
+            color: white;
+        }
+        
+        .severity-box.critical {
+            background: {{ config.colors.danger }};
+        }
+        
+        .severity-box.high {
+            background: {{ config.colors.warning }};
+        }
+        
+        .severity-box.medium {
+            background: #f1c40f;
+        }
+        
+        .severity-box.low {
+            background: {{ config.colors.secondary }};
+        }
+        
+        .severity-box.info {
+            background: #95a5a6;
+        }
+        
+        .severity-box .count {
+            font-size: 2.5em;
+            font-weight: bold;
+        }
+        
+        .severity-box .label {
+            font-size: 0.9em;
+            text-transform: uppercase;
+        }
+        
+        .findings {
+            list-style: none;
+        }
+        
+        .findings li {
+            padding: 15px;
+            margin: 10px 0;
+            background: #f9f9f9;
+            border-left: 4px solid {{ config.colors.danger }};
+            border-radius: 4px;
+        }
+        
+        .findings li:before {
+            content: "⚠️ ";
+            margin-right: 10px;
+        }
+        
+        .recommendations {
+            list-style: none;
+            counter-reset: recommendation;
+        }
+        
+        .recommendations li {
+            padding: 15px;
+            padding-left: 50px;
+            margin: 10px 0;
+            background: #e8f5e9;
+            border-left: 4px solid {{ config.colors.success }};
+            border-radius: 4px;
+            position: relative;
+        }
+        
+        .recommendations li:before {
+            counter-increment: recommendation;
+            content: counter(recommendation);
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: {{ config.colors.success }};
+            color: white;
+            width: 25px;
+            height: 25px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+        
+        .chart {
+            text-align: center;
+            margin: 30px 0;
+        }
+        
+        .chart img {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            background: white;
+        }
+        
+        .footer {
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 2px solid #ddd;
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        @media print {
+            body {
+                background: white;
+            }
+            
+            .container {
+                max-width: 100%;
+            }
+            
+            .section {
+                page-break-inside: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            {% if config.logo_path %}
+            <img src="{{ config.logo_path }}" alt="Logo" style="max-height: 80px; margin-bottom: 20px;">
+            {% endif %}
+            
+            <h1>{{ config.title }}</h1>
+            {% if config.subtitle %}
+            <div class="subtitle">{{ config.subtitle }}</div>
+            {% endif %}
+            
+            <div class="classification">{{ config.classification }}</div>
+        </div>
+        
+        <!-- Metadata -->
+        <div class="metadata">
+            <table>
+                <tr>
+                    <td>Organization:</td>
+                    <td>{{ config.organization }}</td>
+                </tr>
+                <tr>
+                    <td>Analyst:</td>
+                    <td>{{ config.analyst_name }}</td>
+                </tr>
+                {% if config.case_number %}
+                <tr>
+                    <td>Case Number:</td>
+                    <td>{{ config.case_number }}</td>
+                </tr>
+                {% endif %}
+                <tr>
+                    <td>Generated:</td>
+                    <td>{{ generated_at|datetime }}</td>
+                </tr>
+                <tr>
+                    <td>Total Events:</td>
+                    <td>{{ total_events }}</td>
+                </tr>
+            </table>
+        </div>
+        
+        <!-- Executive Summary -->
+        <div class="section">
+            <h2>Executive Summary</h2>
+            
+            <!-- Risk Score -->
+            <div class="risk-score">
+                <div class="score">{{ summary.risk_score }}</div>
+                <div class="label">Overall Risk Score (0-100)</div>
+            </div>
+            
+            <!-- Severity Distribution -->
+            <h3>Security Event Distribution</h3>
+            <div class="severity-grid">
+                <div class="severity-box critical">
+                    <div class="count">{{ summary.severity_counts.CRITICAL }}</div>
+                    <div class="label">Critical</div>
+                </div>
+                <div class="severity-box high">
+                    <div class="count">{{ summary.severity_counts.HIGH }}</div>
+                    <div class="label">High</div>
+                </div>
+                <div class="severity-box medium">
+                    <div class="count">{{ summary.severity_counts.MEDIUM }}</div>
+                    <div class="label">Medium</div>
+                </div>
+                <div class="severity-box low">
+                    <div class="count">{{ summary.severity_counts.LOW }}</div>
+                    <div class="label">Low</div>
+                </div>
+                <div class="severity-box info">
+                    <div class="count">{{ summary.severity_counts.INFO }}</div>
+                    <div class="label">Info</div>
+                </div>
+            </div>
+            
+            <!-- Key Findings -->
+            {% if summary.key_findings %}
+            <h3>Key Findings</h3>
+            <ul class="findings">
+                {% for finding in summary.key_findings %}
+                <li>{{ finding }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            
+            <!-- Recommendations -->
+            {% if summary.recommendations %}
+            <h3>Recommendations</h3>
+            <ul class="recommendations">
+                {% for rec in summary.recommendations %}
+                <li>{{ rec }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+        
+        <!-- Charts -->
+        {% if config.include_charts and charts %}
+        <div class="section">
+            <h2>Visual Analysis</h2>
+            
+            <div class="chart">
+                <h3>Event Timeline</h3>
+                <img src="data:image/png;base64,{{ charts.timeline }}" alt="Timeline Chart">
+            </div>
+            
+            <div class="chart">
+                <h3>Category Distribution</h3>
+                <img src="data:image/png;base64,{{ charts.category_dist }}" alt="Category Distribution">
+            </div>
+            
+            <div class="chart">
+                <h3>Severity Distribution</h3>
+                <img src="data:image/png;base64,{{ charts.severity_dist }}" alt="Severity Distribution">
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- Footer -->
+        <div class="footer">
+            <p>{{ config.organization }} | {{ config.classification }}</p>
+            <p>This report contains confidential information and is intended only for authorized recipients.</p>
+        </div>
+    </div>
+</body>
+</html>

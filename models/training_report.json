@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-01-07T21:47:53.100240",
+  "models_trained": [
+    "malware_classifier",
+    "network_anomaly"
+  ],
+  "metrics": {
+    "malware_classifier": {
+      "accuracy": 0.5128719783576229,
+      "model_type": "RandomForest",
+      "dl_accuracy": 0.5231695610437211,
+      "best_model": "DeepLearning",
+      "epochs_trained": 150.0
+    },
+    "network_anomaly": {
+      "anomaly_count": 320373.0
+    }
+  }
+}

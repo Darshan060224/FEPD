@@ -1,0 +1,267 @@
+{
+  "training_date": "2026-01-08T19:25:41.784020",
+  "status": "SUCCESS",
+  "dry_run": false,
+  "log_entries": [
+    {
+      "timestamp": "2026-01-08T19:25:40.589712",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:40.589915",
+      "level": "info",
+      "message": "STEP 1: Entering training mode..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:40.590024",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:40.593470",
+      "level": "info",
+      "message": "\u2705 Training mode activated"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:40.593615",
+      "level": "info",
+      "message": ""
+    },
+    {
+      "timestamp": "2026-01-08T19:25:40.593733",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:40.593975",
+      "level": "info",
+      "message": "STEP 2: Extracting ML datasets..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:40.594229",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.079078",
+      "level": "info",
+      "message": "\u2705 Extracted 5 datasets"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.079702",
+      "level": "info",
+      "message": "   malware: C:\\Users\\darsh\\Desktop\\FEPD\\src\\ml\\data\\malware\\file_features_v1.csv"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.080102",
+      "level": "info",
+      "message": "   evtx: C:\\Users\\darsh\\Desktop\\FEPD\\src\\ml\\data\\evtx\\event_features_v1.csv"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.080335",
+      "level": "info",
+      "message": "   network: C:\\Users\\darsh\\Desktop\\FEPD\\src\\ml\\data\\network\\flow_features_v1.csv"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.080655",
+      "level": "info",
+      "message": "   cloud: C:\\Users\\darsh\\Desktop\\FEPD\\src\\ml\\data\\cloud\\cloud_event_features_v1.csv"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.080896",
+      "level": "info",
+      "message": "   ueba: C:\\Users\\darsh\\Desktop\\FEPD\\src\\ml\\data\\ueba\\user_behavior_features_v1.csv"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.081159",
+      "level": "info",
+      "message": ""
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.081345",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.081539",
+      "level": "info",
+      "message": "STEP 3: Validating data quality..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.081682",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.248491",
+      "level": "info",
+      "message": "\u2705 All 5 datasets validated"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.248957",
+      "level": "info",
+      "message": ""
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.249365",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.249598",
+      "level": "info",
+      "message": "STEP 4: Training ML models..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.249910",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.250257",
+      "level": "info",
+      "message": "\n   Training malware model..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.250840",
+      "level": "error",
+      "message": "      \u274c Failed to train malware: 'ModelRegistry' object has no attribute 'get_model_class'"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.251170",
+      "level": "info",
+      "message": "\n   Training evtx_anomaly model..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.251611",
+      "level": "error",
+      "message": "      \u274c Failed to train evtx_anomaly: 'ModelRegistry' object has no attribute 'get_model_class'"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.251886",
+      "level": "info",
+      "message": "\n   Training registry_persistence model..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.252145",
+      "level": "info",
+      "message": "      \u26a0\ufe0f Skipping registry_persistence (no dataset mapping)"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.252319",
+      "level": "info",
+      "message": "\n   Training memory_anomaly model..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.252697",
+      "level": "info",
+      "message": "      \u26a0\ufe0f Skipping memory_anomaly (no dataset mapping)"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.252885",
+      "level": "info",
+      "message": "\n   Training network_anomaly model..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.253452",
+      "level": "error",
+      "message": "      \u274c Failed to train network_anomaly: 'ModelRegistry' object has no attribute 'get_model_class'"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.253810",
+      "level": "info",
+      "message": "\n   Training ueba model..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.254339",
+      "level": "error",
+      "message": "      \u274c Failed to train ueba: 'ModelRegistry' object has no attribute 'get_model_class'"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.254573",
+      "level": "info",
+      "message": "\u2705 Trained 0 models"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.254885",
+      "level": "info",
+      "message": ""
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.255227",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.255549",
+      "level": "info",
+      "message": "STEP 5: Securely wiping dataa/..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.255788",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.764395",
+      "level": "info",
+      "message": "\u2705 dataa/ wiped and verified"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.765077",
+      "level": "info",
+      "message": ""
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.765624",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.766295",
+      "level": "info",
+      "message": "STEP 6: Entering inference mode..."
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.766863",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.778085",
+      "level": "info",
+      "message": "\u2705 Inference mode activated"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.779844",
+      "level": "info",
+      "message": ""
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.780723",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.781445",
+      "level": "info",
+      "message": "TRAINING COMPLETE"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.782124",
+      "level": "info",
+      "message": "============================================================"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.782683",
+      "level": "info",
+      "message": "Duration: 1.2 seconds"
+    },
+    {
+      "timestamp": "2026-01-08T19:25:41.783332",
+      "level": "info",
+      "message": "Status: SUCCESS \u2705"
+    }
+  ]
+}

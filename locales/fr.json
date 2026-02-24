@@ -1,0 +1,92 @@
+{
+  "app": {
+    "name": "Tableau de Bord d'Analyse Forensique",
+    "version": "Version {version}",
+    "title": "FEPD - Analyse Forensique Numérique"
+  },
+  "report": {
+    "title": "Rapport d'Analyse Forensique",
+    "generated_on": "Généré le : {date}",
+    "metadata": {
+      "case_id": "ID du Cas",
+      "examiner": "Examinateur",
+      "date": "Date d'Analyse",
+      "image_file": "Fichier Image Disque",
+      "image_size": "Taille de l'Image",
+      "image_hash": "Hash de l'Image (MD5)",
+      "total_events": "Nombre Total d'Événements",
+      "time_range": "Plage Temporelle"
+    },
+    "sections": {
+      "executive_summary": "Résumé Exécutif",
+      "timeline": "Analyse de la Chronologie",
+      "artifacts": "Résumé des Artefacts",
+      "findings": "Conclusions Principales",
+      "recommendations": "Recommandations"
+    },
+    "timeline": {
+      "header": "Événements de la Chronologie",
+      "timestamp": "Horodatage",
+      "event_type": "Type d'Événement",
+      "source": "Source",
+      "description": "Description",
+      "classification": "Classification"
+    },
+    "artifacts": {
+      "header": "Artefacts Extraits",
+      "type": "Type",
+      "count": "Nombre",
+      "size": "Taille Totale"
+    },
+    "classification": {
+      "NORMAL": "Normal",
+      "SUSPICIOUS": "Suspect",
+      "CRITICAL": "Critique",
+      "INFORMATIONAL": "Informatif"
+    }
+  },
+  "ui": {
+    "tabs": {
+      "timeline": "Chronologie",
+      "artifacts": "Artefacts",
+      "filesystem": "Système de Fichiers",
+      "ml_analytics": "Analytique ML",
+      "visualizations": "Visualisations",
+      "search": "Recherche",
+      "platform": "Analyse de Plateforme"
+    },
+    "buttons": {
+      "export_report": "Exporter le Rapport",
+      "save_session": "Sauvegarder la Session",
+      "restore_session": "Restaurer la Session",
+      "apply_filter": "Appliquer le Filtre",
+      "clear_filter": "Effacer le Filtre",
+      "refresh": "Actualiser"
+    },
+    "dialogs": {
+      "language_selection": "Sélectionner la Langue du Rapport",
+      "session_restore": "Session Disponible",
+      "confirm_export": "Confirmer l'Exportation",
+      "error": "Erreur",
+      "success": "Succès"
+    }
+  },
+  "timeline": {
+    "event_count": "{count} événements",
+    "filtered_events": "Affichage de {count} événements filtrés",
+    "date_range": "Plage de dates : {start} à {end}",
+    "no_events": "Aucun événement à afficher"
+  },
+  "artifacts": {
+    "total": "{count} artefacts extraits",
+    "by_type": "{count} fichiers {type}"
+  },
+  "messages": {
+    "export_success": "Rapport exporté avec succès vers {path}",
+    "export_failed": "Échec de l'exportation du rapport : {error}",
+    "session_saved": "Session sauvegardée avec succès",
+    "session_restored": "Session restaurée avec succès",
+    "loading": "Chargement...",
+    "processing": "Traitement de {current} sur {total}..."
+  }
+}

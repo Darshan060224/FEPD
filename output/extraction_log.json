@@ -1,0 +1,23 @@
+{
+  "extraction_summary": {
+    "image_path": "test.E01",
+    "output_dir": "output",
+    "start_time": "2025-11-07T14:47:01.333582",
+    "artifacts": {},
+    "errors": [],
+    "image_metadata": {
+      "type": "ewf",
+      "size": 1000000,
+      "hash": "abc123"
+    },
+    "end_time": "2025-11-07T14:47:01.333642",
+    "success": true
+  },
+  "extracted_artifacts": [],
+  "chain_of_custody": {
+    "image_hash": "abc123",
+    "extraction_time": "2025-11-07T14:47:01.333582",
+    "tool": "FEPD Artifact Extractor",
+    "verify_hash": true
+  }
+}

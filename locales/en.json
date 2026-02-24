@@ -1,0 +1,92 @@
+{
+  "app": {
+    "name": "Forensic Evidence Parser Dashboard",
+    "version": "Version {version}",
+    "title": "FEPD - Digital Forensics Analysis"
+  },
+  "report": {
+    "title": "Forensic Analysis Report",
+    "generated_on": "Generated on: {date}",
+    "metadata": {
+      "case_id": "Case ID",
+      "examiner": "Examiner",
+      "date": "Analysis Date",
+      "image_file": "Disk Image File",
+      "image_size": "Image Size",
+      "image_hash": "Image Hash (MD5)",
+      "total_events": "Total Events",
+      "time_range": "Time Range"
+    },
+    "sections": {
+      "executive_summary": "Executive Summary",
+      "timeline": "Timeline Analysis",
+      "artifacts": "Artifact Summary",
+      "findings": "Key Findings",
+      "recommendations": "Recommendations"
+    },
+    "timeline": {
+      "header": "Timeline Events",
+      "timestamp": "Timestamp",
+      "event_type": "Event Type",
+      "source": "Source",
+      "description": "Description",
+      "classification": "Classification"
+    },
+    "artifacts": {
+      "header": "Extracted Artifacts",
+      "type": "Type",
+      "count": "Count",
+      "size": "Total Size"
+    },
+    "classification": {
+      "NORMAL": "Normal",
+      "SUSPICIOUS": "Suspicious",
+      "CRITICAL": "Critical",
+      "INFORMATIONAL": "Informational"
+    }
+  },
+  "ui": {
+    "tabs": {
+      "timeline": "Timeline",
+      "artifacts": "Artifacts",
+      "filesystem": "File System",
+      "ml_analytics": "ML Analytics",
+      "visualizations": "Visualizations",
+      "search": "Search",
+      "platform": "Platform Analysis"
+    },
+    "buttons": {
+      "export_report": "Export Report",
+      "save_session": "Save Session",
+      "restore_session": "Restore Session",
+      "apply_filter": "Apply Filter",
+      "clear_filter": "Clear Filter",
+      "refresh": "Refresh"
+    },
+    "dialogs": {
+      "language_selection": "Select Report Language",
+      "session_restore": "Session Available",
+      "confirm_export": "Confirm Export",
+      "error": "Error",
+      "success": "Success"
+    }
+  },
+  "timeline": {
+    "event_count": "{count} events",
+    "filtered_events": "Showing {count} filtered events",
+    "date_range": "Date range: {start} to {end}",
+    "no_events": "No events to display"
+  },
+  "artifacts": {
+    "total": "{count} artifacts extracted",
+    "by_type": "{count} {type} files"
+  },
+  "messages": {
+    "export_success": "Report exported successfully to {path}",
+    "export_failed": "Failed to export report: {error}",
+    "session_saved": "Session saved successfully",
+    "session_restored": "Session restored successfully",
+    "loading": "Loading...",
+    "processing": "Processing {current} of {total}..."
+  }
+}

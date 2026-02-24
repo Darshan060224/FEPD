@@ -1,0 +1,22 @@
+# Custom Forensic Rules
+# Add organization-specific rules here
+# These rules extend the default rulebook
+
+custom_evtx_rules: []
+
+custom_registry_rules: []
+
+custom_prefetch_rules: []
+
+custom_mft_rules: []
+
+custom_browser_rules: []
+
+# Example custom rule:
+# - event_id: 9999
+#   provider: "CustomProvider"
+#   classification:
+#     - condition: "always"
+#       class: "USER_ACTIVITY"
+#       severity: 2
+#       rationale: "Custom event detection"

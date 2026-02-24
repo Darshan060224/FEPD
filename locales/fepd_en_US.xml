@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE TS>
+<TS version="2.1" language="en_US">
+<context>
+    <name>MainWindow</name>
+    <message>
+        <source>Forensic Evidence Parser Dashboard</source>
+        <translation>Forensic Evidence Parser Dashboard</translation>
+    </message>
+    <message>
+        <source>File</source>
+        <translation>File</translation>
+    </message>
+    <message>
+        <source>View</source>
+        <translation>View</translation>
+    </message>
+    <message>
+        <source>Tools</source>
+        <translation>Tools</translation>
+    </message>
+    <message>
+        <source>Help</source>
+        <translation>Help</translation>
+    </message>
+    <message>
+        <source>Open Evidence...</source>
+        <translation>Open Evidence...</translation>
+    </message>
+    <message>
+        <source>Export Report...</source>
+        <translation>Export Report...</translation>
+    </message>
+    <message>
+        <source>Exit</source>
+        <translation>Exit</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Language</translation>
+    </message>
+</context>
+<context>
+    <name>Timeline</name>
+    <message>
+        <source>Timeline</source>
+        <translation>Timeline</translation>
+    </message>
+    <message>
+        <source>Search</source>
+        <translation>Search</translation>
+    </message>
+    <message>
+        <source>Filter</source>
+        <translation>Filter</translation>
+    </message>
+    <message>
+        <source>Export</source>
+        <translation>Export</translation>
+    </message>
+    <message>
+        <source>Date Range</source>
+        <translation>Date Range</translation>
+    </message>
+</context>
+<context>
+    <name>Categories</name>
+    <message>
+        <source>File Activity</source>
+        <translation>File Activity</translation>
+    </message>
+    <message>
+        <source>Network Activity</source>
+        <translation>Network Activity</translation>
+    </message>
+    <message>
+        <source>Process Execution</source>
+        <translation>Process Execution</translation>
+    </message>
+    <message>
+        <source>Registry Modification</source>
+        <translation>Registry Modification</translation>
+    </message>
+    <message>
+        <source>Authentication</source>
+        <translation>Authentication</translation>
+    </message>
+    <message>
+        <source>System Event</source>
+        <translation>System Event</translation>
+    </message>
+</context>
+<context>
+    <name>Severity</name>
+    <message>
+        <source>CRITICAL</source>
+        <translation>CRITICAL</translation>
+    </message>
+    <message>
+        <source>HIGH</source>
+        <translation>HIGH</translation>
+    </message>
+    <message>
+        <source>MEDIUM</source>
+        <translation>MEDIUM</translation>
+    </message>
+    <message>
+        <source>LOW</source>
+        <translation>LOW</translation>
+    </message>
+    <message>
+        <source>INFO</source>
+        <translation>INFO</translation>
+    </message>
+</context>
+<context>
+    <name>Analytics</name>
+    <message>
+        <source>Anomaly Detection</source>
+        <translation>Anomaly Detection</translation>
+    </message>
+    <message>
+        <source>User Behavior</source>
+        <translation>User Behavior</translation>
+    </message>
+    <message>
+        <source>Threat Intelligence</source>
+        <translation>Threat Intelligence</translation>
+    </message>
+    <message>
+        <source>Timeline Graph</source>
+        <translation>Timeline Graph</translation>
+    </message>
+</context>
+<context>
+    <name>Reports</name>
+    <message>
+        <source>Executive Summary</source>
+        <translation>Executive Summary</translation>
+    </message>
+    <message>
+        <source>Technical Details</source>
+        <translation>Technical Details</translation>
+    </message>
+    <message>
+        <source>Compliance Audit</source>
+        <translation>Compliance Audit</translation>
+    </message>
+    <message>
+        <source>Incident Response</source>
+        <translation>Incident Response</translation>
+    </message>
+</context>
+</TS>

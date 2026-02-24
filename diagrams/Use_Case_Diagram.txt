@@ -1,0 +1,240 @@
+# UML Use Case Diagram - FEPD
+
+```
+                ┌───────────────────────────────┐
+                │           ANALYST              │
+                │      (Forensic Examiner)       │
+                └───────┬───────────────────────┘
+                        │ interacts with UI
+                        v
+     ┌──────────────────────────────────────────────────────┐
+     │                    FEPD Application                  │
+     │                                                      │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC1) Load Disk Image (E01/RAW/DD)             │ │
+     │  │       ├─ includes ─→ (UC2) Compute SHA-256     │ │
+     │  │       └─ includes ─→ (UC3) Create CoC Entry    │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC4) Auto Discover Windows Artifacts          │ │
+     │  │       ├─ Event Logs                            │ │
+     │  │       ├─ Registry Hives                        │ │
+     │  │       ├─ Prefetch Files                        │ │
+     │  │       ├─ Browser Databases                     │ │
+     │  │       └─ NTFS $MFT                             │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC5) Extract Artifact to Workspace            │ │
+     │  │       ├─ includes ─→ (UC6) Hash Extracted File │ │
+     │  │       └─ includes ─→ (UC7) Log to CoC          │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC8) Parse Artifacts                          │ │
+     │  │       ├─ Parse EVTX (Event Logs)               │ │
+     │  │       ├─ Parse Registry Hives                  │ │
+     │  │       ├─ Parse Prefetch Files                  │ │
+     │  │       ├─ Parse MFT (NTFS Metadata)             │ │
+     │  │       └─ Parse Browser History                 │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC9) Normalize Parsed Data                    │ │
+     │  │       └─ Convert to unified event schema       │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC10) Apply Rule Engine Classification        │ │
+     │  │       ├─ Assign rule_class                     │ │
+     │  │       ├─ Compute severity score                │ │
+     │  │       └─ Generate rationale                    │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC11) Timeline Visualization & Filtering      │ │
+     │  │       ├─ Display vertical timeline             │ │
+     │  │       ├─ Apply filters (time/class/keyword)    │ │
+     │  │       ├─ Toggle UTC/Local time                 │ │
+     │  │       ├─ View Sankey attack flow diagram       │ │
+     │  │       ├─ View event heatmap calendar           │ │
+     │  │       └─ View process-file relationship graph  │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC12) Add Analyst Notes                       │ │
+     │  │       └─ Attach notes to timeline events       │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC13) Generate Final Report (PDF/HTML)        │ │
+     │  │       ├─ includes ─→ (UC14) Compute Report Hash│ │
+     │  │       ├─ includes ─→ (UC15) Log Report to CoC  │ │
+     │  │       └─ includes ─→ (UC16) Embed Provenance   │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC17) Export Events to CSV                    │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC18) Export Chain-of-Custody Log             │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                       │                              │
+     │                       v                              │
+     │  ┌────────────────────────────────────────────────┐ │
+     │  │ (UC19) Reopen Existing Case                    │ │
+     │  │       └─ Restore session state + filters       │ │
+     │  └────────────────────────────────────────────────┘ │
+     │                                                      │
+     └──────────────────────────────────────────────────────┘
+```
+
+---
+
+## Use Case Descriptions
+
+### Primary Actor: **Forensic Analyst**
+Role: Digital forensics examiner conducting post-mortem disk image analysis
+
+---
+
+### UC1: Load Disk Image
+- **Goal**: Ingest forensic disk image into FEPD
+- **Preconditions**: Valid E01/RAW/DD file available
+- **Postconditions**: Image mounted read-only, SHA-256 computed, CoC entry created
+- **Normal Flow**:
+  1. Analyst selects image file via file chooser
+  2. System validates format (E01/RAW/DD)
+  3. System opens image in read-only mode
+  4. System computes SHA-256 hash
+  5. System logs operation to Chain-of-Custody
+- **Extensions**:
+  - 2a. Invalid format → Display error, prompt to select valid image
+  - 3a. Image corrupted → Display error, abort operation
+
+### UC4: Auto Discover Windows Artifacts
+- **Goal**: Automatically locate forensic artifacts inside mounted image
+- **Preconditions**: Disk image successfully loaded
+- **Postconditions**: List of artifact paths populated
+- **Normal Flow**:
+  1. System scans `/Windows/System32/winevt/Logs/` for EVTX files
+  2. System scans `/Windows/System32/config/` for Registry hives
+  3. System scans `/Windows/Prefetch/` for .pf files
+  4. System scans browser profile folders for history DBs
+  5. System locates NTFS $MFT
+  6. System displays artifact count to user
+- **Extensions**:
+  - 1a-5a. Path not found → Skip that artifact type, log warning
+
+### UC5: Extract Artifact to Workspace
+- **Goal**: Copy artifact from image to local case workspace
+- **Preconditions**: Artifact discovered in UC4
+- **Postconditions**: Artifact extracted, hashed, logged
+- **Normal Flow**:
+  1. System creates case workspace directory
+  2. System reads artifact from mounted image (read-only)
+  3. System writes artifact to workspace
+  4. System computes SHA-256 hash of extracted file
+  5. System logs hash + path + timestamp to CoC
+- **Extensions**:
+  - 3a. Insufficient disk space → Display error, pause extraction
+
+### UC8: Parse Artifacts
+- **Goal**: Convert binary artifacts into structured records
+- **Preconditions**: Artifacts extracted in UC5
+- **Postconditions**: Parsed records ready for normalization
+- **Normal Flow**:
+  1. System identifies artifact type (EVTX/REG/PF/MFT/Browser)
+  2. System routes artifact to appropriate parser module
+  3. Parser extracts structured fields
+  4. System stores raw parsed records
+- **Extensions**:
+  - 3a. Parser error (corrupted artifact) → Log error, skip artifact, continue
+
+### UC10: Apply Rule Engine Classification
+- **Goal**: Assign forensic classification and severity to events
+- **Preconditions**: Events normalized in UC9
+- **Postconditions**: All events have rule_class and severity assigned
+- **Normal Flow**:
+  1. System loads forensic rulebook (YAML/JSON)
+  2. For each event:
+     - System evaluates rule conditions
+     - System assigns matching classification
+     - System computes severity score
+     - System generates rationale text
+  3. System updates event records with classifications
+- **Extensions**:
+  - 2a. No rule matches → Assign "NORMAL" class, severity 1
+
+### UC11: Timeline Visualization & Filtering
+- **Goal**: Display classified events in interactive timeline
+- **Preconditions**: Events classified in UC10
+- **Postconditions**: Timeline displayed, filters applied
+- **Normal Flow**:
+  1. System renders vertical timeline (chronologically sorted)
+  2. System applies color coding by rule_class
+  3. Analyst applies filters (timestamp range, keywords, classes)
+  4. System updates timeline view
+  5. Analyst toggles UTC/Local time display
+  6. Analyst selects event → System displays details panel
+- **Extensions**:
+  - 6a. Analyst views Sankey diagram → System generates attack flow viz
+  - 6b. Analyst views heatmap → System generates calendar intensity map
+  - 6c. Analyst views process graph → System generates network diagram
+
+### UC13: Generate Final Report
+- **Goal**: Produce PDF/HTML report with complete case documentation
+- **Preconditions**: Analysis complete, analyst adds notes
+- **Postconditions**: Report generated, hashed, logged
+- **Normal Flow**:
+  1. Analyst clicks "Generate Report"
+  2. System compiles:
+     - Case summary
+     - Image hash
+     - Artifact hash table
+     - Classification statistics
+     - Timeline event table
+     - Analyst notes
+  3. System generates PDF and HTML versions
+  4. System computes SHA-256 of PDF
+  5. System logs report hash to CoC
+  6. System displays report preview
+- **Extensions**:
+  - 3a. PDF generation fails → Log error, retry, or fallback to HTML only
+
+### UC19: Reopen Existing Case
+- **Goal**: Resume analysis of previously saved case
+- **Preconditions**: Valid case directory exists
+- **Postconditions**: Case loaded, session state restored
+- **Normal Flow**:
+  1. Analyst selects case directory
+  2. System loads normalized events from case DB
+  3. System restores filter settings and timezone preferences
+  4. System displays timeline from previous session
+- **Extensions**:
+  - 1a. Case directory corrupted → Display error, suggest recovery
+
+---
+
+## Relationship Types
+
+- **<<includes>>**: Mandatory sub-use case (e.g., UC1 includes UC2 - computing hash is required)
+- **<<extends>>**: Optional extension (e.g., UC11 extends with Sankey/Heatmap views)
+
+---
+
+**Document Version:** 1.0  
+**Diagram Type:** UML Use Case Diagram  
+**Last Updated:** November 6, 2025

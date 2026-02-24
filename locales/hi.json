@@ -1,0 +1,92 @@
+{
+  "app": {
+    "name": "फॉरेंसिक साक्ष्य पार्सर डैशबोर्ड",
+    "version": "संस्करण {version}",
+    "title": "FEPD - डिजिटल फॉरेंसिक विश्लेषण"
+  },
+  "report": {
+    "title": "फॉरेंसिक विश्लेषण रिपोर्ट",
+    "generated_on": "उत्पन्न तिथि: {date}",
+    "metadata": {
+      "case_id": "केस आईडी",
+      "examiner": "परीक्षक",
+      "date": "विश्लेषण तिथि",
+      "image_file": "डिस्क इमेज फ़ाइल",
+      "image_size": "इमेज आकार",
+      "image_hash": "इमेज हैश (MD5)",
+      "total_events": "कुल घटनाएं",
+      "time_range": "समय सीमा"
+    },
+    "sections": {
+      "executive_summary": "कार्यकारी सारांश",
+      "timeline": "समयरेखा विश्लेषण",
+      "artifacts": "कलाकृति सारांश",
+      "findings": "मुख्य निष्कर्ष",
+      "recommendations": "सिफारिशें"
+    },
+    "timeline": {
+      "header": "समयरेखा घटनाएं",
+      "timestamp": "समय चिह्न",
+      "event_type": "घटना प्रकार",
+      "source": "स्रोत",
+      "description": "विवरण",
+      "classification": "वर्गीकरण"
+    },
+    "artifacts": {
+      "header": "निकाली गई कलाकृतियां",
+      "type": "प्रकार",
+      "count": "संख्या",
+      "size": "कुल आकार"
+    },
+    "classification": {
+      "NORMAL": "सामान्य",
+      "SUSPICIOUS": "संदिग्ध",
+      "CRITICAL": "गंभीर",
+      "INFORMATIONAL": "सूचनात्मक"
+    }
+  },
+  "ui": {
+    "tabs": {
+      "timeline": "समयरेखा",
+      "artifacts": "कलाकृतियां",
+      "filesystem": "फ़ाइल सिस्टम",
+      "ml_analytics": "एमएल विश्लेषण",
+      "visualizations": "विज़ुअलाइज़ेशन",
+      "search": "खोज",
+      "platform": "प्लेटफॉर्म विश्लेषण"
+    },
+    "buttons": {
+      "export_report": "रिपोर्ट निर्यात करें",
+      "save_session": "सत्र सहेजें",
+      "restore_session": "सत्र पुनर्स्थापित करें",
+      "apply_filter": "फ़िल्टर लागू करें",
+      "clear_filter": "फ़िल्टर साफ़ करें",
+      "refresh": "ताज़ा करें"
+    },
+    "dialogs": {
+      "language_selection": "रिपोर्ट भाषा चुनें",
+      "session_restore": "सत्र उपलब्ध है",
+      "confirm_export": "निर्यात की पुष्टि करें",
+      "error": "त्रुटि",
+      "success": "सफलता"
+    }
+  },
+  "timeline": {
+    "event_count": "{count} घटनाएं",
+    "filtered_events": "{count} फ़िल्टर की गई घटनाएं दिखा रहा है",
+    "date_range": "तिथि सीमा: {start} से {end}",
+    "no_events": "प्रदर्शित करने के लिए कोई घटना नहीं"
+  },
+  "artifacts": {
+    "total": "{count} कलाकृतियां निकाली गईं",
+    "by_type": "{count} {type} फ़ाइलें"
+  },
+  "messages": {
+    "export_success": "रिपोर्ट सफलतापूर्वक {path} पर निर्यात की गई",
+    "export_failed": "रिपोर्ट निर्यात विफल: {error}",
+    "session_saved": "सत्र सफलतापूर्वक सहेजा गया",
+    "session_restored": "सत्र सफलतापूर्वक पुनर्स्थापित किया गया",
+    "loading": "लोड हो रहा है...",
+    "processing": "{total} में से {current} की प्रक्रिया हो रही है..."
+  }
+}

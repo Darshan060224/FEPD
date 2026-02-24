@@ -1,0 +1,149 @@
+# DFD Level 1 - FEPD Internal Process Decomposition
+
+```
+                     ┌─────────────────────┐
+                     │    Analyst/ User    │
+                     └───────┬─────────────┘
+                             │
+                             │ (1) Selects forensic image
+                             v
+                    ┌──────────────────────┐
+                    │ 1. Load Disk Image   │
+                    │   (Read-Only Mount)  │
+                    └───────┬──────────────┘
+                            │  
+                            │ Mounted filesystem handle
+                            v
+                   ┌───────────────────────┐
+                   │ 2. Auto Artifact Scan │
+                   │  (Known paths lookup) │
+                   └───────┬───────────────┘
+                           │ 
+                           │ Discovered artifacts list
+                           v
+                  ┌────────────────────────┐
+                  │ 3. Extract Artifacts   │
+                  │    (Local workspace)   │
+                  └───────┬────────────────┘
+                          │ 
+                          │ Extracted files + SHA-256 hashes
+                          v
+                 ┌──────────────────────────┐
+                 │ 4. Parse Artifacts       │
+                 │ (EVTX/REG/PF/MFT/Browser)│
+                 └───────┬──────────────────┘
+                         │ 
+                         │ Raw parsed rows
+                         v
+                ┌────────────────────────────┐
+                │ 5. Normalize to Unified    │
+                │      Event Schema          │
+                └───────┬────────────────────┘
+                        │ 
+                        │ Normalized event records
+                        v
+               ┌──────────────────────────────┐
+               │ 6. Apply Forensic Rule Engine│
+               │    (Classify + Severity)     │
+               └───────┬──────────────────────┘
+                       │ 
+                       │ Classified events
+                       v
+              ┌────────────────────────────────┐
+              │ 7. Timeline & Visual Analytics │
+              │ (Vertical stacked waveform UI) │
+              └───────┬────────────────────────┘
+                      │ 
+                      │ Filtered insights + user interactions
+                      v
+             ┌──────────────────────────────────┐
+             │ 8. Report Generation (HTML/PDF)  │
+             │   + SHA-256 hash + CoC logging   │
+             └──────────────────────────────────┘
+```
+
+---
+
+## Process Descriptions
+
+### Process 1: Load Disk Image
+- **Input**: Forensic image file path (from analyst)
+- **Processing**: 
+  - Open E01/RAW/DD in read-only mode using pyewf/pytsk3
+  - Compute SHA-256 hash of entire image
+  - Create Chain-of-Custody entry
+- **Output**: Mounted virtual filesystem handle
+
+### Process 2: Auto Artifact Scan
+- **Input**: Mounted filesystem handle
+- **Processing**: 
+  - Scan known Windows artifact directories
+  - Identify Event Logs, Registry hives, Prefetch, Browser DBs, $MFT
+- **Output**: List of discovered artifact paths
+
+### Process 3: Extract Artifacts
+- **Input**: Artifact path list
+- **Processing**: 
+  - Extract each artifact to local case workspace
+  - Compute SHA-256 hash per artifact
+  - Log extraction to Chain-of-Custody
+- **Output**: Extracted artifact files + hashes
+
+### Process 4: Parse Artifacts
+- **Input**: Extracted artifact files
+- **Processing**: 
+  - Route to appropriate parser (python-evtx, python-registry, etc.)
+  - Extract structured data from binary formats
+- **Output**: Raw parsed records (varying schemas by artifact type)
+
+### Process 5: Normalize to Unified Schema
+- **Input**: Raw parsed records
+- **Processing**: 
+  - Convert timestamps to UTC
+  - Map fields to normalized schema (event_id, ts_utc, artifact_source, etc.)
+  - Merge records from all artifact sources
+- **Output**: Unified normalized event table
+
+### Process 6: Apply Forensic Rule Engine
+- **Input**: Normalized events
+- **Processing**: 
+  - Apply deterministic classification rules
+  - Assign rule_class (USER_ACTIVITY, REMOTE_ACCESS, STAGING, etc.)
+  - Compute severity scores (1-5)
+  - Generate human-readable descriptions
+- **Output**: Classified events with severity and rationale
+
+### Process 7: Timeline & Visual Analytics
+- **Input**: Classified events
+- **Processing**: 
+  - Render vertical timeline (chronologically sorted)
+  - Apply color coding by classification
+  - Support filtering (timestamps, keywords, event types)
+  - Generate Sankey diagram, heatmap, process graph
+- **Output**: Interactive visualizations
+
+### Process 8: Report Generation
+- **Input**: Classified events, case metadata, analyst notes
+- **Processing**: 
+  - Generate PDF/HTML report
+  - Embed image hash, artifact hashes, timeline summary
+  - Compute SHA-256 of report
+  - Log report generation to Chain-of-Custody
+- **Output**: Final PDF/HTML report + hash
+
+---
+
+## Data Stores (Implicit)
+
+| Data Store | Description |
+|------------|-------------|
+| **Case Workspace** | Local directory containing extracted artifacts |
+| **Chain-of-Custody Log** | Append-only log file recording all operations + hashes |
+| **Normalized Events DB** | Temporary storage for processed events (SQLite or in-memory) |
+| **Configuration Files** | Rule definitions, timezone settings, filter preferences |
+
+---
+
+**Document Version:** 1.0  
+**Diagram Type:** Data Flow Diagram - Level 1 (Process Decomposition)  
+**Last Updated:** November 6, 2025

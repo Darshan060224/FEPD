@@ -1,0 +1,91 @@
+
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>FEPD ML Training Report</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+            .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+            h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+            h2 { color: #34495e; margin-top: 30px; }
+            .metric { display: inline-block; margin: 15px; padding: 20px; background: #ecf0f1; border-radius: 5px; min-width: 200px; }
+            .metric-value { font-size: 32px; font-weight: bold; color: #3498db; }
+            .metric-label { color: #7f8c8d; font-size: 14px; }
+            img { max-width: 100%; margin: 20px 0; border: 1px solid #ddd; }
+            .success { color: #27ae60; }
+            .warning { color: #f39c12; }
+            table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background-color: #34495e; color: white; }
+            tr:hover { background-color: #f5f5f5; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎯 FEPD ML Training Report</h1>
+            <p><strong>Generated:</strong> 2026-01-07 21:31:15</p>
+            
+            <h2>📊 Dataset Summary</h2>
+            <div class="metric">
+                <div class="metric-value">57,293</div>
+                <div class="metric-label">Malware Samples</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">10,000</div>
+                <div class="metric-label">Network Packets (Sample)</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">14</div>
+                <div class="metric-label">Malware Categories</div>
+            </div>
+            
+            <h2>🎯 Model Performance</h2>
+            <table>
+                <tr>
+                    <th>Model</th>
+                    <th>Algorithm</th>
+                    <th>Accuracy/Performance</th>
+                    <th>Status</th>
+                </tr>
+                <tr>
+                    <td>Malware Classifier</td>
+                    <td>Random Forest</td>
+                    <td>51.29%</td>
+                    <td class="warning">⚠️ Needs Improvement</td>
+                </tr>
+                <tr>
+                    <td>Network Anomaly Detector</td>
+                    <td>Isolation Forest</td>
+                    <td>90% Normal Detection</td>
+                    <td class="success">✅ Ready</td>
+                </tr>
+            </table>
+            
+            <h2>📈 Visualizations</h2>
+            <h3>Malware Distribution</h3>
+            <img src="malware_distribution.png" alt="Malware Distribution">
+            
+            <h3>Network Patterns</h3>
+            <img src="network_patterns.png" alt="Network Patterns">
+            
+            <h3>Dashboard</h3>
+            <img src="ml_dashboard.png" alt="ML Dashboard">
+            
+            <h2>📝 Top Malware Categories</h2>
+            <table>
+                <tr><th>Category</th><th>Count</th><th>Percentage</th></tr>
+    <tr><td>trojan</td><td>29,972</td><td>52.3%</td></tr><tr><td>worm</td><td>16,697</td><td>29.1%</td></tr><tr><td>backdoor</td><td>7,331</td><td>12.8%</td></tr><tr><td>downloader</td><td>1,031</td><td>1.8%</td></tr><tr><td>ransomware</td><td>821</td><td>1.4%</td></tr><tr><td>dropper</td><td>715</td><td>1.2%</td></tr><tr><td>informationstealer</td><td>448</td><td>0.8%</td></tr><tr><td>virus</td><td>192</td><td>0.3%</td></tr><tr><td>pua</td><td>29</td><td>0.1%</td></tr><tr><td>cryptominer</td><td>20</td><td>0.0%</td></tr>
+            </table>
+            
+            <h2>✅ Next Steps</h2>
+            <ul>
+                <li>Add more features for better malware classification</li>
+                <li>Integrate models into FEPD application</li>
+                <li>Set up continuous model monitoring</li>
+                <li>Collect more training data</li>
+                <li>Implement deep learning models</li>
+            </ul>
+        </div>
+    </body>
+    </html>
+    

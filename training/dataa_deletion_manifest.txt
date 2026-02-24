@@ -1,0 +1,8 @@
+dataa/ Deletion Manifest
+=========================
+Deleted at: 2026-01-08 19:25:41
+Path: C:\Users\darsh\Desktop\FEPD\dataa
+Total files: 0
+Total size: 0.0 MB
+
+File types:

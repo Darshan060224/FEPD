@@ -1,0 +1,241 @@
+# UML Sequence Diagram - FEPD Complete Interaction Flow
+
+```
+User          UI           Ingestion      Extraction     Parsing     Normalize     Rule Engine     Timeline UI     Report Engine
+  |             |                |             |             |             |              |               |               |
+  |---Select Image-------------->|             |             |             |              |               |               |
+  |             |---Open RO---->|             |             |             |              |               |               |
+  |             |<-Image OK-----|             |             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Compute SHA256----------->|             |             |              |               |               |
+  |             |<-Image Hash-----------------|             |             |              |               |               |
+  |             |---Log to CoC--------------->|             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Auto Discover------------>|             |             |              |               |               |
+  |             |<-Artifact List--------------|             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Extract Artifact---------->|             |             |              |               |               |
+  |             |<-Artifact Bytes-------------|             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Compute SHA256------------>|            |             |              |               |               |
+  |             |<-Artifact Hash---------------|            |             |              |               |               |
+  |             |---Log to CoC---------------->|            |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Parse Artifact-------------------------->|             |              |               |               |
+  |             |<--Parsed Records---------------------------|             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Normalize---------------------------------------------->|              |               |               |
+  |             |<--Normalized Rows-----------------------------------------|              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Classify---------------------------------------------------------------->|               |               |
+  |             |<--Classified Events--------------------------------------------------------|               |               |
+  |             |                |             |             |             |              |               |               |
+  |             |---Render Timeline------------------------------------------------------------------------->|               |
+  |             |<--Timeline Ready----------------------------------------------------------------------------|               |
+  |             |                |             |             |             |              |               |               |
+  |<--Display Timeline-----------|             |             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |---Apply Filter-------------->|             |             |             |              |               |               |
+  |             |---Filter Events--------------------------------------------------------------------------->|               |
+  |             |<--Filtered Timeline-------------------------------------------------------------------------|               |
+  |<--Updated Timeline View------|             |             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |---Select Event-------------->|             |             |             |              |               |               |
+  |<--Event Details--------------|             |             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |---Add Note------------------>|             |             |             |              |               |               |
+  |             |---Save Note--->|             |             |             |              |               |               |
+  |<--Note Saved-----------------|             |             |             |              |               |               |
+  |             |                |             |             |             |              |               |               |
+  |---Generate Report--------------------------------------------------------------------------------------------------------->|
+  |             |<--Report PDF + SHA256---------------------------------------------------------------------------------------|
+  |             |---Log Report Hash-------->|              |             |              |               |               |
+  |<--Report Ready---------------|             |             |             |              |               |               |
+```
+
+---
+
+## Sequence Flow Breakdown
+
+### Interaction 1-3: Image Ingestion
+```
+User → UI: Select disk image file
+UI → Ingestion: Open image read-only
+Ingestion → UI: Image handle ready
+```
+**Purpose:** Load forensic image without write access
+
+---
+
+### Interaction 4-6: Image Hashing & CoC
+```
+UI → Ingestion: Compute SHA-256 of image
+Ingestion → UI: Return hash value
+UI → Ingestion: Log hash to Chain-of-Custody
+```
+**Purpose:** Establish cryptographic integrity baseline
+
+---
+
+### Interaction 7-8: Artifact Discovery
+```
+UI → Extraction: Auto-discover artifacts
+Extraction → UI: Return artifact path list
+```
+**Purpose:** Identify forensic artifacts without manual navigation
+
+---
+
+### Interaction 9-13: Artifact Extraction & Hashing
+```
+UI → Extraction: Extract artifact to workspace
+Extraction → UI: Return extracted file
+UI → Extraction: Compute SHA-256 of artifact
+Extraction → UI: Return artifact hash
+UI → Extraction: Log artifact hash to CoC
+```
+**Purpose:** Create hashed copies of evidence for analysis
+**Note:** This sequence repeats for each discovered artifact
+
+---
+
+### Interaction 14-15: Parsing
+```
+UI → Parsing: Parse artifact (route by type)
+Parsing → UI: Return structured records
+```
+**Purpose:** Convert binary artifacts to structured data
+**Parser Selection:**
+- EVTX → `python-evtx`
+- Registry → `python-registry`
+- Prefetch → `python-prefetch-parser`
+- MFT → `analyzeMFT`
+- Browser → `sqlite3`
+
+---
+
+### Interaction 16-17: Normalization
+```
+UI → Normalize: Normalize parsed records
+Normalize → UI: Return unified event schema
+```
+**Purpose:** Merge different artifact types into common format
+
+---
+
+### Interaction 18-19: Classification
+```
+UI → Rule Engine: Classify events
+Rule Engine → UI: Return classified events with severity
+```
+**Purpose:** Apply deterministic forensic rules to assign categories
+
+---
+
+### Interaction 20-22: Timeline Rendering
+```
+UI → Timeline UI: Render timeline with events
+Timeline UI → UI: Timeline ready signal
+UI → User: Display timeline
+```
+**Purpose:** Visualize chronological forensic narrative
+
+---
+
+### Interaction 23-26: Interactive Filtering
+```
+User → UI: Apply filter (time range/keyword/class)
+UI → Timeline UI: Filter events
+Timeline UI → UI: Filtered timeline
+UI → User: Display updated timeline
+```
+**Purpose:** Allow investigator to focus on specific evidence
+
+---
+
+### Interaction 27-28: Event Inspection
+```
+User → UI: Select event from timeline
+UI → User: Display event details (artifact path, hash, raw data)
+```
+**Purpose:** Drill down into individual evidence items
+
+---
+
+### Interaction 29-31: Note Annotation
+```
+User → UI: Add note to event
+UI → Ingestion: Save note to case metadata
+UI → User: Confirm note saved
+```
+**Purpose:** Document investigator observations
+
+---
+
+### Interaction 32-35: Report Generation
+```
+User → Report Engine: Generate final report
+Report Engine → UI: Return PDF + SHA-256
+UI → Ingestion: Log report hash to CoC
+UI → User: Display report ready confirmation
+```
+**Purpose:** Produce legally admissible final documentation
+
+---
+
+## Timing Estimates (Typical Case)
+
+| Interaction Group | Duration | Notes |
+|-------------------|----------|-------|
+| Image Ingestion (1-3) | 5-10 seconds | Depends on pyewf initialization |
+| Image Hashing (4-6) | 30-300 seconds | Varies by image size (100GB-1TB) |
+| Artifact Discovery (7-8) | 10-30 seconds | Filesystem tree traversal |
+| Extraction & Hashing (9-13) | 60-180 seconds | Depends on artifact count |
+| Parsing (14-15) | 30-120 seconds | EVTX parsing most time-consuming |
+| Normalization (16-17) | 5-10 seconds | pandas DataFrame operations |
+| Classification (18-19) | 5-15 seconds | Rule evaluation on 500K events |
+| Timeline Render (20-22) | 2-5 seconds | PyQt6 lazy rendering |
+| Filtering (23-26) | <1 second | Indexed search |
+| Report Generation (32-35) | 20-40 seconds | PDF rendering with reportlab |
+
+**Total End-to-End:** ~3-10 minutes (excluding image hashing which depends on size)
+
+---
+
+## Synchronous vs. Asynchronous Interactions
+
+### Synchronous (Blocking)
+- Image hashing (must complete before proceeding)
+- Artifact extraction (sequential dependency)
+- Report generation (requires complete dataset)
+
+### Asynchronous (Non-Blocking)
+- Parsing multiple artifacts (can parallelize by type)
+- Timeline filtering (background thread)
+- Note saving (non-critical path)
+
+---
+
+## Error Handling Sequences
+
+### Parser Error Flow
+```
+UI → Parsing: Parse artifact
+Parsing --X--> UI: Parser error exception
+UI → Ingestion: Log error to case log
+UI → UI: Skip artifact, continue with next
+```
+
+### Image Read Error Flow
+```
+UI → Ingestion: Open image
+Ingestion --X--> UI: Read error exception
+UI → User: Display error dialog
+[Workflow aborts - critical failure]
+```
+
+---
+
+**Document Version:** 1.0  
+**Diagram Type:** UML Sequence Diagram  
+**Last Updated:** November 6, 2025

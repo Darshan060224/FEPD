@@ -1,0 +1,31 @@
+{
+  "model_name": "malware_classifier",
+  "version": "v2_advanced",
+  "dataset_path": "test_malware_dataset.csv",
+  "output_dir": "models_test",
+  "features": [
+    "entropy",
+    "file_size_log",
+    "path_depth",
+    "pe_sections",
+    "imported_dlls",
+    "exported_functions",
+    "code_section_entropy",
+    "data_section_size",
+    "resource_section_size",
+    "packer_detected",
+    "digital_signature",
+    "creation_time_anomaly",
+    "strings_count",
+    "suspicious_strings",
+    "network_indicators",
+    "registry_indicators",
+    "file_permissions",
+    "hidden_attribute",
+    "system_file",
+    "tmp_file"
+  ],
+  "target_column": "is_malware",
+  "test_size": 0.2,
+  "random_state": 42
+}

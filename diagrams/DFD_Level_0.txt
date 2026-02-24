@@ -1,0 +1,45 @@
+# DFD Level 0 - FEPD Context Diagram
+
+```
+                     ┌─────────────────────┐
+                     │   Forensic Analyst  │
+                     │      (Actor)        │
+                     └──────────┬──────────┘
+                                │
+                                │ Selects disk image
+                                │ Reviews timeline
+                                │ Generates reports
+                                │
+                                v
+                     ┌──────────────────────┐
+                     │                      │
+                     │        FEPD          │
+                     │     Application      │
+                     │  (Complete System)   │
+                     │                      │
+                     └──────────┬───────────┘
+                                │
+                                │ Reads (read-only)
+                                │
+                                v
+                     ┌──────────────────────┐
+                     │  Forensic Disk Image │
+                     │   (E01 / RAW / DD)   │
+                     └──────────────────────┘
+```
+
+## Description
+
+**Level 0** shows the entire FEPD system as a single process with its external entities:
+
+- **Actor**: Forensic Analyst (investigator who operates the tool)
+- **Input**: Forensic disk images (E01, RAW, DD formats)
+- **Output**: Timeline visualizations and PDF reports
+
+The system operates as a black box at this level, with no internal decomposition.
+
+---
+
+**Document Version:** 1.0  
+**Diagram Type:** Data Flow Diagram - Level 0 (Context)  
+**Last Updated:** November 6, 2025
