@@ -628,7 +628,10 @@ class MainWindow(QMainWindow):
                         size=size,
                         sha256=hash_val,
                         evidence_id=artifact_type,
-                        metadata={'artifact_type': artifact_type}
+                        metadata={
+                            'artifact_type': artifact_type,
+                            'physical_path': str(extracted_path.absolute())
+                        }
                     )
                     nodes_to_add.append(file_node)
                     
@@ -2018,8 +2021,31 @@ class MainWindow(QMainWindow):
                                     if fs_info:
                                         # FAST MODE: Extract only forensic artifacts (not entire filesystem)
                                         extracted = self._extract_artifacts_only(handler, fs_info, partition_dir, partition_idx=i, total_partitions=len(partitions))
-                                        total_extracted += extracted
                                         self.logger.info(f"Extracted {extracted} artifacts from partition {i}")
+                                        
+                                        if extracted == 0:
+                                            # No known artifacts found - try recursive extraction (Linux/Mac/other FS)
+                                            self.logger.info(f"No known artifacts on partition {i} - trying recursive extraction...")
+                                            self.progress_update_signal.emit(partition_progress + 3, f"Partition {i+1}: Recursive scan of filesystem...")
+                                            extracted = self._extract_partition_recursive(
+                                                handler, fs_info, partition_dir, "/",
+                                                max_depth=4, partition_idx=i, total_partitions=len(partitions)
+                                            )
+                                            self.logger.info(f"Recursive extraction got {extracted} files from partition {i}")
+                                        
+                                        if extracted == 0:
+                                            # Still nothing - try file carving as last resort
+                                            self.logger.info(f"Recursive extraction found nothing on partition {i} - trying file carving...")
+                                            self.progress_update_signal.emit(partition_progress + 4, f"Partition {i+1}: Carving files...")
+                                            try:
+                                                carved_dir = partition_dir / "carved_files"
+                                                carved_count = handler.carve_files_from_partition(i, carved_dir)
+                                                extracted += carved_count
+                                                self.logger.info(f"Carved {carved_count} files from partition {i}")
+                                            except Exception as carve_err:
+                                                self.logger.warning(f"File carving failed on partition {i}: {carve_err}")
+                                        
+                                        total_extracted += extracted
                                         
                                         # Update with extraction count
                                         self.progress_update_signal.emit(partition_progress + 5, f"Partition {i}: Extracted {extracted} artifacts")
@@ -2705,7 +2731,26 @@ class MainWindow(QMainWindow):
                     # Update Files tab with read function that accesses image directly
                     if hasattr(self, 'files_tab_widget') and self.files_tab_widget:
                         def read_file_from_image(path: str, offset: int = 0, length: int = -1) -> bytes:
-                            """Read file directly from forensic image."""
+                            """Read file from physical disk (carved/extracted) or forensic image."""
+                            import os
+                            try:
+                                # Check if this VFS node has a physical_path (carved/extracted files)
+                                if hasattr(self, 'vfs') and self.vfs:
+                                    node = self.vfs.get_node(path)
+                                    if node and node.metadata and node.metadata.get('physical_path'):
+                                        phys = node.metadata['physical_path']
+                                        if os.path.isfile(phys):
+                                            with open(phys, 'rb') as f:
+                                                data = f.read()
+                                            if data and offset >= 0:
+                                                if length > 0:
+                                                    return data[offset:offset + length]
+                                                else:
+                                                    return data[offset:]
+                                            return data or b''
+                            except Exception as e:
+                                self.logger.debug(f"Physical path read failed for {path}: {e}")
+                            # Fallback: read from forensic image via pytsk3
                             try:
                                 data = vefs_builder.read_file(path)
                                 if data and offset >= 0:
@@ -3915,6 +3960,47 @@ class MainWindow(QMainWindow):
                 'Users/*/NTUSER.DAT',
                 'Users/*/AppData/Local/Microsoft/Windows/UsrClass.dat',
             ],
+            # Linux artifacts
+            'linux_system': [
+                'etc/passwd',
+                'etc/shadow',
+                'etc/group',
+                'etc/hostname',
+                'etc/hosts',
+                'etc/fstab',
+                'etc/crontab',
+                'etc/sudoers',
+                'etc/os-release',
+            ],
+            'linux_logs': [
+                'var/log/syslog',
+                'var/log/auth.log',
+                'var/log/messages',
+                'var/log/kern.log',
+                'var/log/dmesg',
+                'var/log/wtmp',
+                'var/log/btmp',
+                'var/log/lastlog',
+                'var/log/secure',
+                'var/log/faillog',
+                'var/log/apache2/*.log',
+                'var/log/nginx/*.log',
+            ],
+            'linux_user': [
+                'home/*/.bash_history',
+                'home/*/.bashrc',
+                'home/*/.profile',
+                'home/*/.ssh/authorized_keys',
+                'home/*/.ssh/known_hosts',
+                'root/.bash_history',
+                'root/.bashrc',
+            ],
+            # macOS artifacts
+            'macos_system': [
+                'private/var/log/system.log',
+                'private/var/log/install.log',
+                'private/var/db/dslocal/nodes/Default/users/*.plist',
+            ],
         }
         
         # Collect all files to extract first (fast discovery phase)
@@ -4089,8 +4175,6 @@ class MainWindow(QMainWindow):
         
         except Exception:
             pass  # Directory read failed - skip
-        
-        return extracted_count
         
         return extracted_count
     

@@ -249,6 +249,39 @@ class VirtualFilesystem:
         conn.commit()
         return cursor.lastrowid
     
+    def update_hash(self, path: str, sha256: str = None, md5: str = None) -> bool:
+        """
+        Update hash values for a node.
+        
+        Args:
+            path: VFS path of the node
+            sha256: SHA-256 hash (hex string)
+            md5: MD5 hash (hex string)
+            
+        Returns:
+            True if node was found and updated
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        updates = []
+        params = []
+        if sha256 is not None:
+            updates.append("sha256 = ?")
+            params.append(sha256)
+        if md5 is not None:
+            updates.append("md5 = ?")
+            params.append(md5)
+        
+        if not updates:
+            return False
+        
+        params.append(path)
+        sql = f"UPDATE virtual_fs SET {', '.join(updates)} WHERE path = ?"
+        cursor.execute(sql, params)
+        conn.commit()
+        return cursor.rowcount > 0
+    
     def add_nodes_batch(self, nodes: List[VFSNode]) -> int:
         """
         Add multiple nodes in a batch transaction.

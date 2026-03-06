@@ -1,1014 +1,770 @@
 """
-FEPD - TAB 2: IMAGE INGEST
-===========================
+FEPD - TAB 2: IMAGE INGEST (Professional Architecture)
+=========================================================
 
-Complete image ingestion tab with VEOS builder integration.
+The entry point of the entire forensic workflow.
 
-Workflow:
-1. User clicks "Add Evidence Image"
-2. Selects E01/DD/RAW/Memory file
-3. System validates format, computes hash
-4. Mounts image read-only with pytsk3/pyewf
-5. Discovers partitions
-6. Builds VEOS layer (evidence-native paths)
-7. Logs to Chain of Custody
+Pipeline:
+    User selects image
+            ↓
+    Case validation
+            ↓
+    Image loader (E01 / RAW / VMDK)
+            ↓
+    Hash verification (SHA-256)
+            ↓
+    Partition discovery
+            ↓
+    Filesystem mount (read-only)
+            ↓
+    VEOS virtual drives
+            ↓
+    Files tab enabled
 
-Features:
-- E01/DD/RAW/Memory support
-- SHA256 hash verification
-- Partition discovery (NTFS/FAT/EXT4/APFS)
-- VEOS builder integration
-- Chain of Custody logging
-- Evidence-native path display
+Image Ingest → Files Tab → Artifacts → Timeline → ML
+
+Architecture:
+    UI (this file)  ──►  IngestController  ──►  ImageLoader
+                                           ──►  HashVerifier
+                                           ──►  PartitionScanner
+                                           ──►  FilesystemBuilder
+                    ──►  EvidenceManager   ──►  ImageRegistry
 
 Copyright (c) 2026 FEPD Development Team
 """
 
+import csv
+import json
 import logging
 import os
-import hashlib
-import json
-import time
-import csv
-from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
-
-# ============================================================================
-# CONSTANTS - Forensic Standards & Configuration
-# ============================================================================
-
-# Hash computation
-HASH_BUFFER_SIZE: int = 8192 * 1024  # 8MB chunks for hash computation
-SUPPORTED_HASH_ALGORITHMS: List[str] = ['SHA256', 'MD5', 'SHA1']
-
-# Progress stages (percentages)
-PROGRESS_VALIDATE: int = 10
-PROGRESS_HASH_START: int = 20
-PROGRESS_HASH_END: int = 40
-PROGRESS_MOUNT: int = 50
-PROGRESS_PARTITION: int = 60
-PROGRESS_VEOS: int = 80
-PROGRESS_METADATA: int = 90
-PROGRESS_COMPLETE: int = 100
-
-# Supported formats
-SUPPORTED_EXTENSIONS: set = {'.e01', '.dd', '.raw', '.img', '.001', '.mem', '.vmem'}
-FORMAT_DESCRIPTIONS: Dict[str, str] = {
-    '.e01': 'EnCase Evidence File',
-    '.001': 'EnCase Segmented Evidence',
-    '.dd': 'Raw Disk Image',
-    '.raw': 'Raw Forensic Image',
-    '.img': 'Disk Image File',
-    '.mem': 'Memory Dump',
-    '.vmem': 'VMware Memory File'
-}
-
-# File size limits
-WARN_SIZE_GB: int = 100  # Warn for files > 100GB
-MAX_BATCH_IMAGES: int = 10  # Maximum images in batch import
-
-# Export formats
-EXPORT_FORMATS: List[str] = ['JSON', 'CSV', 'HTML']
-
-# Chain of Custody detail levels
-COC_DETAIL_BASIC: str = 'basic'
-COC_DETAIL_VERBOSE: str = 'verbose'
-
-# UI update intervals
-PROGRESS_UPDATE_INTERVAL_MS: int = 500  # Update progress every 500ms
-SPEED_CALC_WINDOW_SEC: int = 5  # Calculate speed over 5 second window
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFileDialog, QMessageBox, QProgressDialog, QGroupBox,
-    QLineEdit, QTextEdit, QComboBox, QCheckBox, QProgressBar
+    QFileDialog, QMessageBox, QGroupBox, QSplitter,
+    QLineEdit, QProgressBar, QFrame, QInputDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 
-# Local imports
+# Local imports  ── use absolute paths so the module works from any entry-point
 import sys
-sys.path.insert(0, str(__file__).replace('\\', '/').rsplit('/src/', 1)[0])
+sys.path.insert(0, str(Path(__file__).resolve()).replace("\\", "/").rsplit("/src/", 1)[0])
 
+from src.models.evidence_image import (
+    EvidenceImage, ImageFormat, ImageStatus, ImageType,
+    SUPPORTED_EXTENSIONS, SUPPORTED_DISK_EXTENSIONS,
+    SUPPORTED_MEMORY_EXTENSIONS, FORMAT_DESCRIPTIONS,
+)
+from src.models.partition import Partition, FilesystemType
+from src.ingest.ingest_controller import IngestController, IngestResult
+from src.evidence.evidence_manager import EvidenceManager
+from src.evidence.image_registry import ImageRegistry
 from src.core.case_manager import CaseManager
 from src.core.chain_of_custody import ChainLogger
-from src.core.veos import VirtualEvidenceOS, VEOSDrive
 
 logger = logging.getLogger(__name__)
 
 
-class ImageIngestWorker(QThread):
-    """Worker thread for image ingestion with hash computation and VEOS building."""
-    
-    progress = pyqtSignal(int, str)  # (percentage, status_message)
-    speed_update = pyqtSignal(float, float)  # (mb_per_sec, time_remaining_sec)
-    finished = pyqtSignal(dict)  # (result_dict)
-    error = pyqtSignal(str)  # (error_message)
-    
-    def __init__(self, image_path: str, case_manager: CaseManager, config: Dict[str, Any]):
-        super().__init__()
-        self.image_path = Path(image_path)
-        self.case_manager = case_manager
-        self.config = config
-        self._cancelled = False
-        self._start_time: float = 0.0
-        self._bytes_processed: int = 0
-    
-    def run(self) -> None:
-        """Run ingestion process."""
-        try:
-            self._start_time = time.time()
-            result: Dict[str, Any] = {}
-            
-            # Step 1: Validate format
-            self.progress.emit(PROGRESS_VALIDATE, f"Validating format: {self.image_path.suffix}...")
-            if not self._validate_format():
-                format_desc = FORMAT_DESCRIPTIONS.get(self.image_path.suffix.lower(), 'Unknown format')
-                self.error.emit(
-                    f"❌ Unsupported format: {self.image_path.suffix}\n\n"
-                    f"Detected: {format_desc}\n\n"
-                    f"💡 Supported formats:\n" +
-                    "\n".join([f"  • {ext}: {desc}" for ext, desc in FORMAT_DESCRIPTIONS.items()]) +
-                    "\n\n🔧 Recovery: Convert image to .dd or .e01 format using FTK Imager or dd command."
-                )
-                return
-            
-            # Step 2: Compute hash
-            self.progress.emit(PROGRESS_HASH_START, "Computing SHA256 hash for integrity...")
-            sha256_hash = self._compute_hash()
-            result['hash'] = sha256_hash
-            result['hash_algorithm'] = 'SHA256'
-            
-            # Step 2b: Verify hash if provided
-            if 'expected_hash' in self.config and self.config['expected_hash']:
-                if sha256_hash.lower() != self.config['expected_hash'].lower():
-                    self.error.emit(
-                        f"❌ Hash Mismatch Detected!\n\n"
-                        f"Expected:  {self.config['expected_hash']}\n"
-                        f"Computed:  {sha256_hash}\n\n"
-                        f"⚠️ Evidence integrity compromised!\n\n"
-                        f"💡 Recovery: Verify source image is not corrupted or re-acquire evidence."
-                    )
-                    return
-                result['hash_verified'] = True
-            else:
-                result['hash_verified'] = False
-            
-            # Step 3: Mount image read-only
-            self.progress.emit(PROGRESS_MOUNT, "Mounting image read-only...")
-            mount_info = self._mount_image_readonly()
-            result['mount_info'] = mount_info
-            
-            # Step 4: Discover partitions
-            self.progress.emit(PROGRESS_PARTITION, "Discovering partitions...")
-            partitions = self._discover_partitions()
-            result['partitions'] = partitions
-            
-            # Step 5: Build VEOS layer
-            self.progress.emit(PROGRESS_VEOS, "Building Virtual Evidence OS layer...")
-            veos_drives = self._build_veos_layer(partitions)
-            result['veos_drives'] = veos_drives
-            
-            # Step 6: Save metadata
-            self.progress.emit(PROGRESS_METADATA, "Saving evidence metadata...")
-            self._save_evidence_metadata(result)
-            
-            # Calculate total time
-            total_time = time.time() - self._start_time
-            result['ingestion_time_sec'] = total_time
-            
-            self.progress.emit(PROGRESS_COMPLETE, f"Ingestion complete! ({total_time:.1f}s)")
-            self.finished.emit(result)
-            
-        except Exception as e:
-            logger.error(f"Ingestion error: {e}", exc_info=True)
-            error_msg = (
-                f"❌ Ingestion Failed: {str(e)}\n\n"
-                f"💡 Common Solutions:\n"
-                f"  • Ensure pytsk3/pyewf are installed: pip install pytsk3 pyewf\n"
-                f"  • Verify image file is not corrupted\n"
-                f"  • Check file permissions (run as administrator)\n"
-                f"  • Ensure sufficient disk space for hash computation\n\n"
-                f"🔧 Recovery: Check logs for detailed error information."
-            )
-            self.error.emit(error_msg)
-    
-    def _validate_format(self) -> bool:
-        """Validate image format against supported extensions."""
-        return self.image_path.suffix.lower() in SUPPORTED_EXTENSIONS
-    
-    def _compute_hash(self) -> str:
-        """Compute SHA256 hash with speed and time estimation."""
-        sha256 = hashlib.sha256()
-        
-        total_size = self.image_path.stat().st_size
-        bytes_read = 0
-        last_update_time = time.time()
-        last_bytes = 0
-        
-        with open(self.image_path, 'rb') as f:
-            while True:
-                if self._cancelled:
-                    raise Exception("⚠️ Cancelled by user")
-                
-                chunk = f.read(HASH_BUFFER_SIZE)
-                if not chunk:
-                    break
-                
-                sha256.update(chunk)
-                bytes_read += len(chunk)
-                self._bytes_processed = bytes_read
-                
-                # Update progress and speed
-                current_time = time.time()
-                if current_time - last_update_time >= (PROGRESS_UPDATE_INTERVAL_MS / 1000):
-                    hash_progress = PROGRESS_HASH_START + int((bytes_read / total_size) * (PROGRESS_HASH_END - PROGRESS_HASH_START))
-                    
-                    # Calculate speed
-                    time_delta = current_time - last_update_time
-                    bytes_delta = bytes_read - last_bytes
-                    speed_mb_s = (bytes_delta / (1024**2)) / time_delta if time_delta > 0 else 0
-                    
-                    # Estimate time remaining
-                    bytes_remaining = total_size - bytes_read
-                    time_remaining = bytes_remaining / (bytes_delta / time_delta) if bytes_delta > 0 else 0
-                    
-                    self.progress.emit(
-                        hash_progress,
-                        f"Hashing: {bytes_read / (1024**3):.2f} GB / {total_size / (1024**3):.2f} GB "
-                        f"({speed_mb_s:.1f} MB/s, ~{time_remaining:.0f}s remaining)"
-                    )
-                    self.speed_update.emit(speed_mb_s, time_remaining)
-                    
-                    last_update_time = current_time
-                    last_bytes = bytes_read
-        
-        return sha256.hexdigest()
-    
-    def _mount_image_readonly(self) -> Dict[str, Any]:
-        """Mount image in read-only mode using pytsk3/pyewf."""
-        # Attempt to use pytsk3/pyewf for proper forensic mounting
-        try:
-            import pytsk3
-            import pyewf
-            
-            # For E01 images
-            if self.image_path.suffix.lower() in ['.e01', '.001']:
-                filenames = pyewf.glob(str(self.image_path))
-                ewf_handle = pyewf.handle()
-                ewf_handle.open(filenames)
-                
-                img_info = pytsk3.Img_Info(ewf_handle)
-            else:
-                # Raw DD/IMG
-                img_info = pytsk3.Img_Info(str(self.image_path))
-            
-            return {
-                'status': 'mounted',
-                'readonly': True,
-                'handler': 'pytsk3',
-                'image_size': img_info.get_size()
-            }
-        except ImportError:
-            logger.warning("pytsk3/pyewf not available, using basic file access")
-            return {
-                'status': 'file_access',
-                'readonly': True,
-                'handler': 'basic',
-                'image_size': self.image_path.stat().st_size
-            }
-    
-    def _discover_partitions(self) -> List[Dict[str, Any]]:
-        """Discover partitions in disk image using pytsk3."""
-        partitions: List[Dict[str, Any]] = []
-        
-        try:
-            import pytsk3
-            
-            # Open image
-            if self.image_path.suffix.lower() in ['.e01', '.001']:
-                import pyewf
-                filenames = pyewf.glob(str(self.image_path))
-                ewf_handle = pyewf.handle()
-                ewf_handle.open(filenames)
-                img_info = pytsk3.Img_Info(ewf_handle)
-            else:
-                img_info = pytsk3.Img_Info(str(self.image_path))
-            
-            # Read volume system
-            try:
-                volume = pytsk3.Volume_Info(img_info)
-                
-                for part in volume:
-                    if part.len > 0:
-                        partition_info = {
-                            'index': part.addr,
-                            'start_offset': part.start * volume.info.block_size,
-                            'size_bytes': part.len * volume.info.block_size,
-                            'description': part.desc.decode('utf-8', errors='ignore'),
-                            'flags': str(part.flags)
-                        }
-                        
-                        # Try to detect filesystem
-                        try:
-                            fs_info = pytsk3.FS_Info(img_info, offset=partition_info['start_offset'])
-                            partition_info['filesystem'] = fs_info.info.ftype
-                        except:
-                            partition_info['filesystem'] = 'unknown'
-                        
-                        partitions.append(partition_info)
-            except:
-                # No volume system, try direct filesystem
-                logger.info("No volume system found, trying direct filesystem access")
-                try:
-                    fs_info = pytsk3.FS_Info(img_info)
-                    partitions.append({
-                        'index': 0,
-                        'start_offset': 0,
-                        'size_bytes': img_info.get_size(),
-                        'description': 'Entire image',
-                        'filesystem': fs_info.info.ftype,
-                        'flags': 'active'
-                    })
-                except:
-                    pass
-        
-        except ImportError:
-            logger.warning("pytsk3 not available for partition discovery")
-            # Mock partition for basic mode
-            partitions.append({
-                'index': 0,
-                'start_offset': 0,
-                'size_bytes': self.image_path.stat().st_size,
-                'description': 'Disk Image (partition discovery unavailable)',
-                'filesystem': 'unknown',
-                'flags': 'basic_mode'
-            })
-        
-        return partitions
-    
-    def _build_veos_layer(self, partitions: List[Dict[str, Any]]) -> List[str]:
-        """Build VEOS drives from discovered partitions."""
-        veos_drives: List[str] = []
-        
-        # Build VEOS for each partition
-        for part in partitions:
-            drive_letter = self._assign_drive_letter(part['index'])
-            
-            # Create VEOS drive
-            veos_drive = VEOSDrive(
-                letter=drive_letter,
-                source_image=str(self.image_path),
-                partition_index=part['index'],
-                filesystem=part.get('filesystem', 'unknown'),
-                offset=part['start_offset']
-            )
-            
-            veos_drives.append(f"{drive_letter}:")
-        
-        return veos_drives
-    
-    def _assign_drive_letter(self, partition_index: int) -> str:
-        """Assign drive letter based on partition index."""
-        letters = ['C', 'D', 'E', 'F', 'G', 'H']
-        if partition_index < len(letters):
-            return letters[partition_index]
-        return 'X'
-    
-    def _save_evidence_metadata(self, result: Dict[str, Any]) -> None:
-        """Save evidence metadata to case database with enhanced CoC logging."""
-        if not self.case_manager or not self.case_manager.current_case:
-            return
-        
-        case_db = self.case_manager.current_case['path'] / "case.db"
-        conn = sqlite3.connect(str(case_db))
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO evidence (
-                evidence_id, source_path, hash, hash_algorithm,
-                ingestion_date, operator, partition_count, veos_drives
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            hashlib.md5(str(self.image_path).encode()).hexdigest()[:16],
-            str(self.image_path),
-            result['hash'],
-            result['hash_algorithm'],
-            datetime.now().isoformat(),
-            os.getenv('USERNAME', 'unknown'),
-            len(result['partitions']),
-            json.dumps(result['veos_drives'])
-        ))
-        
-        conn.commit()
-        conn.close()
-    
-    def cancel(self) -> None:
-        """Cancel the ingestion process."""
-        self._cancelled = True
-        logger.info(f"Ingestion cancelled by user: {self.image_path}")
+# ============================================================================
+# Constants
+# ============================================================================
 
+MAX_BATCH_IMAGES: int = 10
+WARN_SIZE_GB: int = 100
+EXPORT_FORMATS: List[str] = ["JSON", "CSV", "HTML"]
+
+# Table column indices
+COL_ID       = 0
+COL_NAME     = 1
+COL_FORMAT   = 2
+COL_SIZE     = 3
+COL_HASH     = 4
+COL_VERIFIED = 5
+COL_PARTS    = 6
+COL_DRIVES   = 7
+COL_STATUS   = 8
+EVIDENCE_COLUMNS = [
+    "ID", "Image Name", "Format", "Size",
+    "SHA-256", "Verified", "Partitions", "VEOS Drives", "Status",
+]
+
+PARTITION_COLUMNS = ["Partition", "Filesystem", "Size", "Mount", "Role"]
+
+
+# ============================================================================
+# Background Worker
+# ============================================================================
+
+class _IngestWorker(QThread):
+    """
+    Runs IngestController.run() on a background thread
+    so the UI stays responsive during hashing / scanning.
+    """
+
+    progress      = pyqtSignal(int, str)          # (pct, message)
+    speed_update  = pyqtSignal(float, float)       # (MB/s, ETA_sec)
+    finished      = pyqtSignal(object)             # IngestResult
+    error         = pyqtSignal(str)                # error message
+
+    def __init__(
+        self,
+        image_path: str,
+        case_path: Path,
+        expected_hash: str = "",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.image_path = image_path
+        self.case_path = case_path
+        self.expected_hash = expected_hash or None
+        self._cancelled = False
+
+    def run(self) -> None:
+        try:
+            ctrl = IngestController(
+                case_path=self.case_path,
+                operator=os.getenv("USERNAME", os.getenv("USER", "unknown")),
+            )
+            result = ctrl.run(
+                image_path=self.image_path,
+                expected_hash=self.expected_hash,
+                on_progress=self._on_progress,
+                is_cancelled=lambda: self._cancelled,
+            )
+            if result.success:
+                self.finished.emit(result)
+            else:
+                self.error.emit(result.error or "Unknown error")
+        except Exception as exc:
+            logger.error("Worker error: %s", exc, exc_info=True)
+            self.error.emit(str(exc))
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    # Map IngestController callbacks → Qt signals
+    def _on_progress(self, pct: int, msg: str, speed: float, eta: float) -> None:
+        self.progress.emit(pct, msg)
+        if speed > 0:
+            self.speed_update.emit(speed, eta)
+
+
+# ============================================================================
+# Image Ingest Tab
+# ============================================================================
 
 class ImageIngestTab(QWidget):
     """
-    TAB 2: IMAGE INGEST
-    
-    Provides complete evidence ingestion workflow with VEOS builder.
-    Features: batch import, hash verification, progress tracking, CoC logging.
+    TAB 2: IMAGE INGEST — Evidence Acquisition
+
+    The foundation of the entire FEPD system.
+    Once this completes:  Image Ingest → Files → Artifacts → Timeline → ML → Report
+
+    Signals:
+        ingest_complete(dict):       Emitted after successful ingestion.
+        filesystem_ready(bool):      Emitted to enable/disable downstream tabs.
     """
-    
-    ingest_complete = pyqtSignal(dict)  # Emits ingestion result
-    
-    def __init__(self, case_manager: CaseManager, parent: Optional[QWidget] = None):
+
+    ingest_complete  = pyqtSignal(dict)
+    filesystem_ready = pyqtSignal(bool)
+
+    def __init__(
+        self,
+        case_manager: CaseManager,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self.case_manager = case_manager
+        self.evidence_manager = EvidenceManager()
         self.chain_logger: Optional[ChainLogger] = None
-        self.worker: Optional[ImageIngestWorker] = None
+        self._worker: Optional[_IngestWorker] = None
         self._batch_queue: List[str] = []
-        self._current_batch_index: int = 0
-        
+        self._batch_idx: int = 0
+
         self._init_ui()
-    
+
+    # ------------------------------------------------------------------
+    # UI Construction
+    # ------------------------------------------------------------------
+
     def _init_ui(self) -> None:
-        """Initialize UI with enhanced controls."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Header
-        header = QLabel("<h2>📥 IMAGE INGEST - Evidence Acquisition</h2>")
-        layout.addWidget(header)
-        
-        # Add Evidence buttons
-        btn_layout = QHBoxLayout()
-        btn_add = QPushButton("➕ Add Evidence Image")
-        btn_add.setMinimumHeight(40)
-        btn_add.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; font-size: 14px;")
-        btn_add.clicked.connect(self._on_add_evidence)
-        btn_layout.addWidget(btn_add)
-        
-        btn_batch = QPushButton("📚 Batch Import (Multiple)")
-        btn_batch.setMinimumHeight(40)
-        btn_batch.setStyleSheet("background-color: #2980b9; color: white; font-weight: bold;")
-        btn_batch.clicked.connect(self._on_batch_import)
-        btn_layout.addWidget(btn_batch)
-        
-        btn_add_folder = QPushButton("📁 Add Artifact Folder")
-        btn_add_folder.setMinimumHeight(40)
-        btn_add_folder.clicked.connect(self._on_add_artifact_folder)
-        btn_layout.addWidget(btn_add_folder)
-        
-        btn_export = QPushButton("💾 Export Evidence List")
-        btn_export.setMinimumHeight(40)
-        btn_export.clicked.connect(self._on_export_evidence_list)
-        btn_layout.addWidget(btn_export)
-        
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
-        
-        # Hash verification panel
-        hash_group = QGroupBox("🔒 Hash Verification (Optional)")
-        hash_layout = QHBoxLayout()
-        hash_layout.addWidget(QLabel("Expected SHA256:"))
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        # ── Header ──
+        hdr = QLabel("Image Ingest")
+        hdr.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        hdr.setStyleSheet("color: #e0e0e0; padding: 4px 0;")
+        root.addWidget(hdr)
+
+        # ── Action buttons ──
+        btn_bar = QHBoxLayout()
+        btn_bar.setSpacing(8)
+
+        self.btn_add_disk = self._action_button(
+            "Add Disk Image", "#1565c0", self._on_add_disk_image,
+        )
+        self.btn_add_mem = self._action_button(
+            "Add Memory Dump", "#00838f", self._on_add_memory_dump,
+        )
+        self.btn_batch = self._action_button(
+            "Batch Import", "#2e7d32", self._on_batch_import,
+        )
+        self.btn_export = self._action_button(
+            "Export Evidence List", "#5d4037", self._on_export_evidence_list,
+        )
+
+        btn_bar.addWidget(self.btn_add_disk)
+        btn_bar.addWidget(self.btn_add_mem)
+        btn_bar.addWidget(self.btn_batch)
+        btn_bar.addWidget(self.btn_export)
+        btn_bar.addStretch()
+        root.addLayout(btn_bar)
+
+        # ── Hash verification ──
+        hash_group = QGroupBox("Hash Verification (Optional)")
+        hash_group.setStyleSheet(self._group_style())
+        hash_lay = QHBoxLayout()
+        hash_lay.addWidget(QLabel("Expected SHA-256:"))
         self.txt_expected_hash = QLineEdit()
-        self.txt_expected_hash.setPlaceholderText("Paste expected hash here for verification (optional)")
-        hash_layout.addWidget(self.txt_expected_hash)
-        btn_import_hash = QPushButton("📂 Import from .sha256 file")
+        self.txt_expected_hash.setPlaceholderText(
+            "Paste expected hash here for court-admissible verification"
+        )
+        hash_lay.addWidget(self.txt_expected_hash)
+        btn_import_hash = QPushButton("Import .sha256")
         btn_import_hash.clicked.connect(self._on_import_hash_file)
-        hash_layout.addWidget(btn_import_hash)
-        hash_group.setLayout(hash_layout)
-        layout.addWidget(hash_group)
-        
+        hash_lay.addWidget(btn_import_hash)
+        hash_group.setLayout(hash_lay)
+        root.addWidget(hash_group)
+
+        # ── Splitter: evidence table + partition viewer ──
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
         # Evidence table
-        evidence_group = QGroupBox("Ingested Evidence")
-        evidence_layout = QVBoxLayout()
-        
-        self.table_evidence = QTableWidget(0, 8)
-        self.table_evidence.setHorizontalHeaderLabels([
-            "Evidence ID", "Source File", "Hash (SHA256)", "Verified", "Size", "Partitions", "VEOS Drives", "Status"
-        ])
-        self.table_evidence.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table_evidence.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        evidence_layout.addWidget(self.table_evidence)
-        
-        evidence_group.setLayout(evidence_layout)
-        layout.addWidget(evidence_group)
-        
-        # Status panel
+        ev_group = QGroupBox("Evidence Table")
+        ev_group.setStyleSheet(self._group_style())
+        ev_lay = QVBoxLayout()
+        self.tbl_evidence = QTableWidget(0, len(EVIDENCE_COLUMNS))
+        self.tbl_evidence.setHorizontalHeaderLabels(EVIDENCE_COLUMNS)
+        self.tbl_evidence.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tbl_evidence.horizontalHeader().setSectionResizeMode(
+            COL_NAME, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_evidence.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.tbl_evidence.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        self.tbl_evidence.currentCellChanged.connect(self._on_evidence_selected)
+        ev_lay.addWidget(self.tbl_evidence)
+        ev_group.setLayout(ev_lay)
+        splitter.addWidget(ev_group)
+
+        # Partition viewer
+        part_group = QGroupBox("Partition Viewer")
+        part_group.setStyleSheet(self._group_style())
+        part_lay = QVBoxLayout()
+        self.tbl_partitions = QTableWidget(0, len(PARTITION_COLUMNS))
+        self.tbl_partitions.setHorizontalHeaderLabels(PARTITION_COLUMNS)
+        self.tbl_partitions.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_partitions.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        part_lay.addWidget(self.tbl_partitions)
+        part_group.setLayout(part_lay)
+        splitter.addWidget(part_group)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        root.addWidget(splitter, stretch=1)
+
+        # ── Status / progress panel ──
         status_group = QGroupBox("Ingestion Status")
-        status_layout = QVBoxLayout()
-        
-        self.lbl_status = QLabel("Ready to ingest evidence")
-        status_layout.addWidget(self.lbl_status)
-        
+        status_group.setStyleSheet(self._group_style())
+        status_lay = QVBoxLayout()
+
+        self.lbl_status = QLabel("Ready — select an evidence image to begin.")
+        self.lbl_status.setStyleSheet("font-size: 13px;")
+        status_lay.addWidget(self.lbl_status)
+
         self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
         self.progress_bar.setVisible(False)
-        status_layout.addWidget(self.progress_bar)
-        
-        # Speed and time info
-        speed_layout = QHBoxLayout()
-        self.lbl_speed = QLabel("Speed: --")
-        speed_layout.addWidget(self.lbl_speed)
-        self.lbl_time_remaining = QLabel("Time Remaining: --")
-        speed_layout.addWidget(self.lbl_time_remaining)
-        speed_layout.addStretch()
-        self.btn_cancel = QPushButton("❌ Cancel")
+        status_lay.addWidget(self.progress_bar)
+
+        speed_lay = QHBoxLayout()
+        self.lbl_speed = QLabel("Speed: —")
+        speed_lay.addWidget(self.lbl_speed)
+        self.lbl_eta = QLabel("ETA: —")
+        speed_lay.addWidget(self.lbl_eta)
+        speed_lay.addStretch()
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setStyleSheet(
+            "background-color: #c62828; color: white; font-weight: bold; "
+            "padding: 6px 16px; border-radius: 4px;"
+        )
         self.btn_cancel.setVisible(False)
-        self.btn_cancel.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold;")
-        self.btn_cancel.clicked.connect(self._on_cancel_ingestion)
-        speed_layout.addWidget(self.btn_cancel)
-        status_layout.addLayout(speed_layout)
-        
-        status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
-        
-        layout.addStretch()
-    
-    def _on_add_evidence(self) -> None:
-        """Handle Add Evidence button click."""
-        # Check if case is loaded
-        if not self.case_manager or not self.case_manager.current_case:
-            QMessageBox.warning(
-                self,
-                "No Case Loaded",
-                "❌ No active case loaded!\n\n"
-                "💡 Recovery: Go to Case tab and create/open a case first."
-            )
+        self.btn_cancel.clicked.connect(self._on_cancel)
+        speed_lay.addWidget(self.btn_cancel)
+        status_lay.addLayout(speed_lay)
+
+        status_group.setLayout(status_lay)
+        root.addWidget(status_group)
+
+    # ------------------------------------------------------------------
+    # Button actions
+    # ------------------------------------------------------------------
+
+    def _on_add_disk_image(self) -> None:
+        """Add a single disk image (E01 / RAW / DD / IMG / VMDK / …)."""
+        if not self._check_case():
             return
-        
-        # Open file dialog
-        filter_str = "Forensic Images (" + " ".join([f"*{ext}" for ext in SUPPORTED_EXTENSIONS]) + ");;All Files (*)"
-        file_path, _ = QFileDialog.getOpenFileName(
+        exts = " ".join(f"*{e}" for e in sorted(SUPPORTED_DISK_EXTENSIONS))
+        path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Evidence Image",
+            "Select Disk Image",
             str(Path.home()),
-            filter_str
+            f"Disk Images ({exts});;All Files (*)",
         )
-        
-        if not file_path:
+        if path:
+            self._warn_and_start(path)
+
+    def _on_add_memory_dump(self) -> None:
+        """Add a memory dump (.mem / .vmem)."""
+        if not self._check_case():
             return
-        
-        # Warn for large files
-        file_size_gb = Path(file_path).stat().st_size / (1024**3)
-        if file_size_gb > WARN_SIZE_GB:
-            reply = QMessageBox.question(
-                self,
-                "Large File Warning",
-                f"⚠️ Large image file detected: {file_size_gb:.1f} GB\n\n"
-                f"Hash computation may take significant time.\n\n"
-                f"Continue with ingestion?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-        
-        # Start ingestion
-        self._start_ingestion(file_path)
-    
-    def _on_add_artifact_folder(self) -> None:
-        """Handle Add Artifact Folder button click."""
-        if not self.case_manager or not self.case_manager.current_case:
-            QMessageBox.warning(
-                self,
-                "No Case Loaded",
-                "❌ No active case loaded!\n\n"
-                "💡 Recovery: Go to Case tab and create/open a case first."
-            )
-            return
-        
-        folder_path = QFileDialog.getExistingDirectory(
+        exts = " ".join(f"*{e}" for e in sorted(SUPPORTED_MEMORY_EXTENSIONS))
+        path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Artifact Folder",
-            str(Path.home())
+            "Select Memory Dump",
+            str(Path.home()),
+            f"Memory Dumps ({exts});;All Files (*)",
         )
-        
-        if folder_path:
-            QMessageBox.information(
-                self,
-                "Artifact Folder",
-                f"📁 Selected: {folder_path}\n\n"
-                f"ℹ️ Artifact folder import coming soon!\n\n"
-                f"This feature will allow direct ingestion of extracted artifacts."
-            )
-    
+        if path:
+            self._warn_and_start(path)
+
     def _on_batch_import(self) -> None:
-        """Handle batch import of multiple images."""
-        if not self.case_manager or not self.case_manager.current_case:
-            QMessageBox.warning(
-                self,
-                "No Case Loaded",
-                "❌ No active case loaded!\n\n"
-                "💡 Recovery: Go to Case tab and create/open a case first."
-            )
+        """Select multiple images for sequential ingestion."""
+        if not self._check_case():
             return
-        
-        filter_str = "Forensic Images (" + " ".join([f"*{ext}" for ext in SUPPORTED_EXTENSIONS]) + ");;All Files (*)"
-        file_paths, _ = QFileDialog.getOpenFileNames(
+        exts = " ".join(f"*{e}" for e in sorted(SUPPORTED_EXTENSIONS))
+        paths, _ = QFileDialog.getOpenFileNames(
             self,
-            f"Select Evidence Images (Max {MAX_BATCH_IMAGES})",
+            f"Select Evidence Images (max {MAX_BATCH_IMAGES})",
             str(Path.home()),
-            filter_str
+            f"Forensic Images ({exts});;All Files (*)",
         )
-        
-        if not file_paths:
+        if not paths:
             return
-        
-        if len(file_paths) > MAX_BATCH_IMAGES:
+        if len(paths) > MAX_BATCH_IMAGES:
             QMessageBox.warning(
-                self,
-                "Too Many Files",
-                f"⚠️ Selected {len(file_paths)} files, maximum is {MAX_BATCH_IMAGES}.\n\n"
-                f"💡 Please select fewer files or ingest in multiple batches."
+                self, "Too Many Files",
+                f"Selected {len(paths)} files — maximum is {MAX_BATCH_IMAGES}.\n"
+                "Please reduce selection or ingest in multiple batches.",
             )
             return
-        
-        # Setup batch queue
-        self._batch_queue = file_paths
-        self._current_batch_index = 0
-        
-        QMessageBox.information(
-            self,
-            "Batch Import",
-            f"📚 Queued {len(file_paths)} images for ingestion.\n\n"
-            f"Starting batch processing..."
-        )
-        
-        # Start first image
-        self._process_next_batch_item()
-    
-    def _process_next_batch_item(self) -> None:
-        """Process next image in batch queue."""
-        if self._current_batch_index < len(self._batch_queue):
-            image_path = self._batch_queue[self._current_batch_index]
-            self.lbl_status.setText(
-                f"Batch: {self._current_batch_index + 1}/{len(self._batch_queue)} - {Path(image_path).name}"
-            )
-            self._start_ingestion(image_path)
-        else:
-            # Batch complete
-            self._batch_queue = []
-            self._current_batch_index = 0
-            QMessageBox.information(
-                self,
-                "Batch Complete",
-                f"✅ All images in batch have been processed!"
-            )
-    
-    def _on_import_hash_file(self) -> None:
-        """Import expected hash from .sha256 or .md5 file."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Hash File",
-            str(Path.home()),
-            "Hash Files (*.sha256 *.md5 *.sha1);;All Files (*)"
-        )
-        
-        if not file_path:
-            return
-        
-        try:
-            with open(file_path, 'r') as f:
-                content = f.read().strip()
-                # Extract hash (usually first 64 chars for SHA256)
-                hash_value = content.split()[0] if ' ' in content else content
-                self.txt_expected_hash.setText(hash_value)
-                QMessageBox.information(
-                    self,
-                    "Hash Imported",
-                    f"✅ Hash imported successfully!\n\n{hash_value[:32]}..."
-                )
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Import Error",
-                f"❌ Failed to import hash file:\n\n{str(e)}"
-            )
-    
+        self._batch_queue = paths
+        self._batch_idx = 0
+        self._process_next_batch()
+
     def _on_export_evidence_list(self) -> None:
-        """Export evidence list to JSON/CSV."""
-        if self.table_evidence.rowCount() == 0:
-            QMessageBox.warning(
-                self,
-                "No Evidence",
-                "⚠️ No evidence to export.\n\n"
-                "💡 Ingest evidence first, then export the list."
-            )
+        """Export current evidence table to JSON / CSV / HTML."""
+        if self.tbl_evidence.rowCount() == 0:
+            QMessageBox.information(self, "Nothing to Export", "No evidence loaded yet.")
             return
-        
-        # Ask format
-        from PyQt6.QtWidgets import QInputDialog
-        format_choice, ok = QInputDialog.getItem(
-            self,
-            "Export Format",
-            "Select export format:",
-            EXPORT_FORMATS,
-            0,
-            False
+        fmt, ok = QInputDialog.getItem(
+            self, "Export Format", "Select format:", EXPORT_FORMATS, 0, False,
         )
-        
         if not ok:
             return
-        
-        # Get save path
-        ext = format_choice.lower()
-        file_path, _ = QFileDialog.getSaveFileName(
+        ext = fmt.lower()
+        path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Evidence List",
             str(Path.home() / f"evidence_list.{ext}"),
-            f"{format_choice} Files (*.{ext});;All Files (*)"
+            f"{fmt} Files (*.{ext});;All Files (*)",
         )
-        
-        if not file_path:
+        if path:
+            self._export_to_file(path, fmt)
+
+    def _on_import_hash_file(self) -> None:
+        """Load an expected hash from a .sha256 / .md5 sidecar file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Hash File",
+            str(Path.home()),
+            "Hash Files (*.sha256 *.md5 *.sha1);;All Files (*)",
+        )
+        if not path:
             return
-        
         try:
-            self._export_evidence_to_file(file_path, format_choice)
-            QMessageBox.information(
-                self,
-                "Export Complete",
-                f"✅ Evidence list exported successfully!\n\n{file_path}"
+            content = Path(path).read_text(encoding="utf-8").strip()
+            hash_val = content.split()[0]
+            self.txt_expected_hash.setText(hash_val)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import Error", f"Failed to read hash file:\n{exc}")
+
+    def _on_cancel(self) -> None:
+        """Cancel the running ingestion."""
+        if self._worker and self._worker.isRunning():
+            reply = QMessageBox.question(
+                self, "Cancel",
+                "Cancel the ongoing ingestion? Progress will be lost.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                f"❌ Failed to export evidence list:\n\n{str(e)}"
-            )
-    
-    def _export_evidence_to_file(self, file_path: str, format_type: str) -> None:
-        """Export evidence table to file."""
-        evidence_list = []
-        for row in range(self.table_evidence.rowCount()):
-            evidence_list.append({
-                'evidence_id': self.table_evidence.item(row, 0).text(),
-                'source_file': self.table_evidence.item(row, 1).text(),
-                'hash': self.table_evidence.item(row, 2).text(),
-                'verified': self.table_evidence.item(row, 3).text(),
-                'size': self.table_evidence.item(row, 4).text(),
-                'partitions': self.table_evidence.item(row, 5).text(),
-                'veos_drives': self.table_evidence.item(row, 6).text(),
-                'status': self.table_evidence.item(row, 7).text()
-            })
-        
-        if format_type == 'JSON':
-            with open(file_path, 'w') as f:
-                json.dump(evidence_list, f, indent=2)
-        elif format_type == 'CSV':
-            with open(file_path, 'w', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=evidence_list[0].keys())
-                writer.writeheader()
-                writer.writerows(evidence_list)
-        elif format_type == 'HTML':
-            html = "<html><body><table border='1'>\n"
-            html += "<tr>" + "".join([f"<th>{k}</th>" for k in evidence_list[0].keys()]) + "</tr>\n"
-            for item in evidence_list:
-                html += "<tr>" + "".join([f"<td>{v}</td>" for v in item.values()]) + "</tr>\n"
-            html += "</table></body></html>"
-            with open(file_path, 'w') as f:
-                f.write(html)
-    
-    def _on_cancel_ingestion(self) -> None:
-        """Cancel ongoing ingestion."""
-        if self.worker and self.worker.isRunning():
+            if reply == QMessageBox.StandardButton.Yes:
+                self._worker.cancel()
+                self._hide_progress("Cancelled by user.")
+
+    # ------------------------------------------------------------------
+    # Case validation  (Step 1)
+    # ------------------------------------------------------------------
+
+    def _check_case(self) -> bool:
+        """Verify a case is loaded before ingestion."""
+        if self.case_manager and self.case_manager.current_case:
+            return True
+        QMessageBox.warning(
+            self,
+            "No Case Loaded",
+            "Please create or open a case first.\n\n"
+            "Go to the Case tab to create or load a case.",
+        )
+        return False
+
+    # ------------------------------------------------------------------
+    # Ingestion launch
+    # ------------------------------------------------------------------
+
+    def _warn_and_start(self, image_path: str) -> None:
+        """Show a size warning if needed, then start ingestion."""
+        size_gb = Path(image_path).stat().st_size / (1024 ** 3)
+        if size_gb > WARN_SIZE_GB:
             reply = QMessageBox.question(
                 self,
-                "Cancel Ingestion",
-                "⚠️ Are you sure you want to cancel the ongoing ingestion?\n\n"
-                "Progress will be lost.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                "Large Image",
+                f"Image is {size_gb:.1f} GB — hashing may take a while.\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-            
-            if reply == QMessageBox.StandardButton.Yes:
-                self.worker.cancel()
-                self.btn_cancel.setVisible(False)
-                self.lbl_status.setText("Ingestion cancelled by user")
-    
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._start_ingestion(image_path)
+
     def _start_ingestion(self, image_path: str) -> None:
-        """Start evidence ingestion process with hash verification."""
-        # Initialize Chain of Custody logger
-        case_path = self.case_manager.current_case['path']
+        """Kick off the background ingestion worker."""
+        case_path = Path(self.case_manager.current_case["path"])
+
+        # Init CoC logger
         self.chain_logger = ChainLogger(str(case_path))
-        
-        # Log to CoC
         self.chain_logger.log(
             action="EVIDENCE_INGEST_START",
-            operator=os.getenv('USERNAME', 'unknown'),
-            details={
-                'source_image': image_path,
-                'timestamp': datetime.now().isoformat()
-            }
+            operator=os.getenv("USERNAME", "unknown"),
+            details={"source_image": image_path, "timestamp": datetime.now().isoformat()},
         )
-        
+
         # Show progress
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         self.btn_cancel.setVisible(True)
         self.lbl_status.setText(f"Ingesting: {Path(image_path).name}")
-        self.lbl_speed.setText("Speed: --")
-        self.lbl_time_remaining.setText("Time Remaining: --")
-        
-        # Create worker thread with hash verification
-        expected_hash = self.txt_expected_hash.text().strip()
-        config = {
-            'verify_hash': True,
-            'readonly': True,
-            'expected_hash': expected_hash if expected_hash else None
-        }
-        
-        self.worker = ImageIngestWorker(image_path, self.case_manager, config)
-        self.worker.progress.connect(self._on_progress)
-        self.worker.speed_update.connect(self._on_speed_update)
-        self.worker.finished.connect(self._on_ingest_complete)
-        self.worker.error.connect(self._on_ingest_error)
-        self.worker.start()
-    
-    def _on_progress(self, percentage: int, message: str) -> None:
-        """Handle progress update."""
-        self.progress_bar.setValue(percentage)
-        self.lbl_status.setText(message)
-    
-    def _on_speed_update(self, speed_mb_s: float, time_remaining_sec: float) -> None:
-        """Handle speed and time remaining update."""
-        self.lbl_speed.setText(f"Speed: {speed_mb_s:.1f} MB/s")
-        if time_remaining_sec < 60:
-            self.lbl_time_remaining.setText(f"Time Remaining: {time_remaining_sec:.0f}s")
+        self.lbl_speed.setText("Speed: —")
+        self.lbl_eta.setText("ETA: —")
+
+        # Disable buttons during ingestion
+        self._set_buttons_enabled(False)
+
+        self._worker = _IngestWorker(
+            image_path=image_path,
+            case_path=case_path,
+            expected_hash=self.txt_expected_hash.text().strip(),
+        )
+        self._worker.progress.connect(self._on_progress)
+        self._worker.speed_update.connect(self._on_speed)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
+
+    # ------------------------------------------------------------------
+    # Worker signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_progress(self, pct: int, msg: str) -> None:
+        self.progress_bar.setValue(pct)
+        self.lbl_status.setText(msg)
+
+    def _on_speed(self, speed: float, eta: float) -> None:
+        self.lbl_speed.setText(f"Speed: {speed:.1f} MB/s")
+        if eta < 60:
+            self.lbl_eta.setText(f"ETA: {eta:.0f}s")
         else:
-            minutes = int(time_remaining_sec / 60)
-            seconds = int(time_remaining_sec % 60)
-            self.lbl_time_remaining.setText(f"Time Remaining: {minutes}m {seconds}s")
-    
-    def _on_ingest_complete(self, result: Dict[str, Any]) -> None:
-        """Handle ingestion completion with enhanced CoC logging."""
-        self.progress_bar.setVisible(False)
-        self.btn_cancel.setVisible(False)
-        self.lbl_status.setText(f"Ingestion complete! ({result.get('ingestion_time_sec', 0):.1f}s)")
-        
-        # Enhanced CoC logging
+            m, s = divmod(int(eta), 60)
+            self.lbl_eta.setText(f"ETA: {m}m {s}s")
+
+    def _on_finished(self, result: IngestResult) -> None:
+        """Handle successful ingestion."""
+        self._hide_progress(
+            f"Ingestion complete — {result.evidence.name} ({result.elapsed:.1f}s)"
+        )
+
+        evidence = result.evidence
+        partitions = result.partitions
+
+        # Register with evidence manager
+        self.evidence_manager.register(evidence, partitions)
+
+        # Register with global image registry
+        try:
+            registry = ImageRegistry(Path("cases"))
+            case_id = self.case_manager.current_case.get("case_id", "")
+            registry.register(
+                sha256=evidence.sha256,
+                case_id=case_id,
+                name=evidence.name,
+                image_format=evidence.format.value,
+                evidence_id=evidence.evidence_id,
+            )
+        except Exception as exc:
+            logger.warning("Registry update failed: %s", exc)
+
+        # Chain of Custody
         if self.chain_logger:
-            coc_details = {
-                'hash': result['hash'],
-                'hash_algorithm': result['hash_algorithm'],
-                'hash_verified': result.get('hash_verified', False),
-                'partitions': len(result['partitions']),
-                'veos_drives': result['veos_drives'],
-                'mount_handler': result['mount_info'].get('handler', 'unknown'),
-                'ingestion_time_sec': result.get('ingestion_time_sec', 0),
-                'image_size_bytes': self.worker.image_path.stat().st_size
-            }
-            
-            # Log partition details
-            for idx, part in enumerate(result['partitions']):
-                coc_details[f'partition_{idx}'] = {
-                    'filesystem': part.get('filesystem', 'unknown'),
-                    'size_bytes': part.get('size_bytes', 0),
-                    'offset': part.get('start_offset', 0)
-                }
-            
             self.chain_logger.log(
                 action="EVIDENCE_INGEST_COMPLETE",
-                operator=os.getenv('USERNAME', 'unknown'),
-                details=coc_details
+                operator=os.getenv("USERNAME", "unknown"),
+                details={
+                    "evidence_id": evidence.evidence_id,
+                    "hash": evidence.sha256,
+                    "hash_verified": evidence.hash_verified,
+                    "partitions": len(partitions),
+                    "veos_drives": evidence.veos_drives,
+                    "ingestion_time": result.elapsed,
+                },
             )
-        
-        # Add to table
-        row = self.table_evidence.rowCount()
-        self.table_evidence.insertRow(row)
-        
-        self.table_evidence.setItem(row, 0, QTableWidgetItem(result['hash'][:16]))
-        self.table_evidence.setItem(row, 1, QTableWidgetItem(str(self.worker.image_path.name)))
-        self.table_evidence.setItem(row, 2, QTableWidgetItem(result['hash'][:32] + "..."))
-        
-        # Verification status
-        verified_text = "✅ Yes" if result.get('hash_verified', False) else "➖ N/A"
-        verified_item = QTableWidgetItem(verified_text)
-        if result.get('hash_verified', False):
-            verified_item.setForeground(QColor("#27ae60"))
-        self.table_evidence.setItem(row, 3, verified_item)
-        
-        size_gb = self.worker.image_path.stat().st_size / (1024**3)
-        self.table_evidence.setItem(row, 4, QTableWidgetItem(f"{size_gb:.2f} GB"))
-        self.table_evidence.setItem(row, 5, QTableWidgetItem(str(len(result['partitions']))))
-        self.table_evidence.setItem(row, 6, QTableWidgetItem(", ".join(result['veos_drives'])))
-        
-        status_item = QTableWidgetItem("✅ Ready")
-        status_item.setForeground(QColor("#27ae60"))
-        self.table_evidence.setItem(row, 7, status_item)
-        
-        # Emit signal
-        self.ingest_complete.emit(result)
-        
-        # Show completion message
-        verified_msg = "✅ Hash verified!" if result.get('hash_verified', False) else ""
+
+        # Populate UI tables
+        self._add_evidence_row(evidence)
+        self._populate_partition_table(partitions)
+
+        # Signal downstream tabs
+        self.ingest_complete.emit(result.to_dict())
+        self.filesystem_ready.emit(True)
+
         QMessageBox.information(
             self,
             "Ingestion Complete",
-            f"✅ Evidence ingested successfully!\n\n"
-            f"Hash: {result['hash'][:32]}...\n"
-            f"{verified_msg}\n"
-            f"Partitions: {len(result['partitions'])}\n"
-            f"VEOS Drives: {', '.join(result['veos_drives'])}\n"
-            f"Time: {result.get('ingestion_time_sec', 0):.1f}s"
+            f"Evidence: {evidence.name}\n"
+            f"Hash: {evidence.hash_short}\n"
+            f"Verified: {'Yes' if evidence.hash_verified else 'N/A'}\n"
+            f"Partitions: {len(partitions)}\n"
+            f"VEOS Drives: {', '.join(evidence.veos_drives)}\n"
+            f"Time: {result.elapsed:.1f}s",
         )
-        
-        # Process next batch item if in batch mode
+
+        # Batch continuation
         if self._batch_queue:
-            self._current_batch_index += 1
-            self._process_next_batch_item()
-    
-    def _on_ingest_error(self, error_msg: str) -> None:
-        """Handle ingestion error with enhanced logging."""
-        self.progress_bar.setVisible(False)
-        self.btn_cancel.setVisible(False)
-        self.lbl_status.setText("Error occurred")
-        
+            self._batch_idx += 1
+            self._process_next_batch()
+
+    def _on_error(self, msg: str) -> None:
+        """Handle ingestion error."""
+        self._hide_progress("Error")
+
         if self.chain_logger:
             self.chain_logger.log(
                 action="EVIDENCE_INGEST_ERROR",
-                operator=os.getenv('USERNAME', 'unknown'),
-                details={
-                    'error': error_msg,
-                    'image_path': str(self.worker.image_path) if self.worker else 'unknown'
-                }
+                operator=os.getenv("USERNAME", "unknown"),
+                details={"error": msg},
             )
-        
-        QMessageBox.critical(self, "Ingestion Error", error_msg)
-        
-        # Continue batch if applicable
+
+        QMessageBox.critical(self, "Ingestion Failed", msg)
+
         if self._batch_queue:
-            self._current_batch_index += 1
-            self._process_next_batch_item()
-    
-    def set_case(self, case_info: Dict[str, Any]) -> None:
-        """Set current case for ingestion."""
-        self.case_manager.current_case = case_info
-        self._load_existing_evidence()
-    
-    def _load_existing_evidence(self) -> None:
-        """Load existing evidence from case database with verification status."""
-        if not self.case_manager or not self.case_manager.current_case:
+            self._batch_idx += 1
+            self._process_next_batch()
+
+    # ------------------------------------------------------------------
+    # Evidence table
+    # ------------------------------------------------------------------
+
+    def _add_evidence_row(self, ev: EvidenceImage) -> None:
+        """Insert one row into the evidence table."""
+        row = self.tbl_evidence.rowCount()
+        self.tbl_evidence.insertRow(row)
+
+        self.tbl_evidence.setItem(row, COL_ID,       QTableWidgetItem(ev.evidence_id))
+        self.tbl_evidence.setItem(row, COL_NAME,     QTableWidgetItem(ev.name))
+        self.tbl_evidence.setItem(row, COL_FORMAT,   QTableWidgetItem(ev.format_display))
+        self.tbl_evidence.setItem(row, COL_SIZE,     QTableWidgetItem(ev.size_display))
+        self.tbl_evidence.setItem(row, COL_HASH,     QTableWidgetItem(ev.hash_short))
+
+        v_item = QTableWidgetItem("Yes" if ev.hash_verified else "N/A")
+        v_item.setForeground(QColor("#4caf50") if ev.hash_verified else QColor("#9e9e9e"))
+        self.tbl_evidence.setItem(row, COL_VERIFIED, v_item)
+
+        self.tbl_evidence.setItem(row, COL_PARTS,    QTableWidgetItem(str(len(ev.partitions))))
+        self.tbl_evidence.setItem(row, COL_DRIVES,   QTableWidgetItem(", ".join(ev.veos_drives)))
+
+        s_item = QTableWidgetItem(ev.status.value)
+        if ev.is_loaded:
+            s_item.setForeground(QColor("#4caf50"))
+        elif ev.is_error:
+            s_item.setForeground(QColor("#f44336"))
+        self.tbl_evidence.setItem(row, COL_STATUS, s_item)
+
+    # ------------------------------------------------------------------
+    # Partition table
+    # ------------------------------------------------------------------
+
+    def _populate_partition_table(self, partitions: List[Partition]) -> None:
+        """Fill the partition viewer from a list of Partition objects."""
+        self.tbl_partitions.setRowCount(0)
+        for p in partitions:
+            row = self.tbl_partitions.rowCount()
+            self.tbl_partitions.insertRow(row)
+            self.tbl_partitions.setItem(row, 0, QTableWidgetItem(str(p.id)))
+            self.tbl_partitions.setItem(row, 1, QTableWidgetItem(p.filesystem.value))
+            self.tbl_partitions.setItem(row, 2, QTableWidgetItem(p.size_display))
+            self.tbl_partitions.setItem(row, 3, QTableWidgetItem(p.mount_point))
+            self.tbl_partitions.setItem(row, 4, QTableWidgetItem(p.role.value))
+
+    def _on_evidence_selected(self, row: int, *_) -> None:
+        """When user clicks an evidence row, show its partitions."""
+        if row < 0:
             return
-        
-        case_db = self.case_manager.current_case['path'] / "case.db"
-        if not case_db.exists():
+        id_item = self.tbl_evidence.item(row, COL_ID)
+        if not id_item:
             return
-        
-        import sqlite3
-        import json
-        
-        conn = sqlite3.connect(str(case_db))
-        cursor = conn.cursor()
-        
+        eid = id_item.text()
+        parts = self.evidence_manager.get_partitions(eid)
+        self._populate_partition_table(parts)
+
+    # ------------------------------------------------------------------
+    # Batch processing
+    # ------------------------------------------------------------------
+
+    def _process_next_batch(self) -> None:
+        if self._batch_idx < len(self._batch_queue):
+            path = self._batch_queue[self._batch_idx]
+            self.lbl_status.setText(
+                f"Batch {self._batch_idx + 1}/{len(self._batch_queue)}: "
+                f"{Path(path).name}"
+            )
+            self._start_ingestion(path)
+        else:
+            self._batch_queue = []
+            self._batch_idx = 0
+            QMessageBox.information(self, "Batch Complete", "All images processed.")
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def _export_to_file(self, path: str, fmt: str) -> None:
+        """Export the evidence table to a file."""
+        rows: List[Dict[str, str]] = []
+        for r in range(self.tbl_evidence.rowCount()):
+            rows.append({
+                col: (self.tbl_evidence.item(r, c).text() if self.tbl_evidence.item(r, c) else "")
+                for c, col in enumerate(EVIDENCE_COLUMNS)
+            })
         try:
-            cursor.execute('SELECT evidence_id, source_path, hash, partition_count, veos_drives FROM evidence')
-            rows = cursor.fetchall()
-            
-            for row in rows:
-                evidence_id, source_path, hash_val, partition_count, veos_drives_json = row
-                
-                table_row = self.table_evidence.rowCount()
-                self.table_evidence.insertRow(table_row)
-                
-                self.table_evidence.setItem(table_row, 0, QTableWidgetItem(evidence_id))
-                self.table_evidence.setItem(table_row, 1, QTableWidgetItem(Path(source_path).name))
-                self.table_evidence.setItem(table_row, 2, QTableWidgetItem(hash_val[:32] + "..."))
-                self.table_evidence.setItem(table_row, 3, QTableWidgetItem("➖ N/A"))  # Verification status unknown for loaded evidence
-                self.table_evidence.setItem(table_row, 4, QTableWidgetItem("-"))
-                self.table_evidence.setItem(table_row, 5, QTableWidgetItem(str(partition_count)))
-                
-                veos_drives = json.loads(veos_drives_json) if veos_drives_json else []
-                self.table_evidence.setItem(table_row, 6, QTableWidgetItem(", ".join(veos_drives)))
-                
-                status_item = QTableWidgetItem("✅ Ready")
-                status_item.setForeground(QColor("#27ae60"))
-                self.table_evidence.setItem(table_row, 7, status_item)
-        
-        except Exception as e:
-            logger.error(f"Error loading evidence: {e}")
-        finally:
-            conn.close()
+            if fmt == "JSON":
+                Path(path).write_text(json.dumps(rows, indent=2), encoding="utf-8")
+            elif fmt == "CSV":
+                with open(path, "w", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(f, fieldnames=EVIDENCE_COLUMNS)
+                    w.writeheader()
+                    w.writerows(rows)
+            elif fmt == "HTML":
+                html = (
+                    "<html><head><style>table{border-collapse:collapse;width:100%}"
+                    "th,td{border:1px solid #555;padding:6px;text-align:left}"
+                    "th{background:#1e1e1e;color:#e0e0e0}</style></head><body>\n"
+                    "<h2>FEPD Evidence List</h2>\n<table>\n<tr>"
+                    + "".join(f"<th>{c}</th>" for c in EVIDENCE_COLUMNS)
+                    + "</tr>\n"
+                )
+                for row in rows:
+                    html += "<tr>" + "".join(f"<td>{row[c]}</td>" for c in EVIDENCE_COLUMNS) + "</tr>\n"
+                html += "</table></body></html>"
+                Path(path).write_text(html, encoding="utf-8")
 
+            QMessageBox.information(self, "Exported", f"Evidence list saved to:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
 
-import sqlite3
+    # ------------------------------------------------------------------
+    # Load existing evidence when case is opened
+    # ------------------------------------------------------------------
 
+    def set_case(self, case_info: Dict[str, Any]) -> None:
+        """Called when a case is opened / switched."""
+        case_path = Path(case_info.get("path", ""))
+        self.evidence_manager = EvidenceManager(case_path)
+        self.evidence_manager.load_from_db()
+        self._rebuild_tables()
 
-def ensure_evidence_table_exists(case_db_path: Path) -> None:
-    """Ensure evidence table exists in case database with all required columns."""
-    conn = sqlite3.connect(str(case_db_path))
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS evidence (
-            evidence_id TEXT PRIMARY KEY,
-            source_path TEXT NOT NULL,
-            hash TEXT,
-            hash_algorithm TEXT,
-            ingestion_date TEXT,
-            operator TEXT,
-            partition_count INTEGER,
-            veos_drives TEXT
+    def _rebuild_tables(self) -> None:
+        """Rebuild UI tables from the evidence manager."""
+        self.tbl_evidence.setRowCount(0)
+        self.tbl_partitions.setRowCount(0)
+        for img in self.evidence_manager.images:
+            self._add_evidence_row(img)
+        # Show partitions for first image
+        if self.evidence_manager.images:
+            first = self.evidence_manager.images[0]
+            parts = self.evidence_manager.get_partitions(first.evidence_id)
+            self._populate_partition_table(parts)
+            self.filesystem_ready.emit(self.evidence_manager.is_ready)
+
+    # ------------------------------------------------------------------
+    # UI helpers
+    # ------------------------------------------------------------------
+
+    def _hide_progress(self, status_text: str) -> None:
+        self.progress_bar.setVisible(False)
+        self.btn_cancel.setVisible(False)
+        self.lbl_status.setText(status_text)
+        self.lbl_speed.setText("Speed: —")
+        self.lbl_eta.setText("ETA: —")
+        self._set_buttons_enabled(True)
+
+    def _set_buttons_enabled(self, enabled: bool) -> None:
+        self.btn_add_disk.setEnabled(enabled)
+        self.btn_add_mem.setEnabled(enabled)
+        self.btn_batch.setEnabled(enabled)
+
+    @staticmethod
+    def _action_button(text: str, color: str, slot) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setMinimumHeight(38)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(
+            f"QPushButton {{ background-color: {color}; color: white; "
+            f"font-weight: bold; font-size: 13px; padding: 6px 18px; "
+            f"border-radius: 4px; }}"
+            f"QPushButton:hover {{ background-color: {color}cc; }}"
+            f"QPushButton:disabled {{ background-color: #555; color: #999; }}"
         )
-    ''')
-    
-    conn.commit()
-    conn.close()
+        btn.clicked.connect(slot)
+        return btn
+
+    @staticmethod
+    def _group_style() -> str:
+        return (
+            "QGroupBox { font-weight: bold; font-size: 13px; "
+            "border: 1px solid #444; border-radius: 6px; margin-top: 8px; "
+            "padding-top: 14px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 12px; "
+            "padding: 0 6px; }"
+        )

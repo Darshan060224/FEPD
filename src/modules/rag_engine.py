@@ -99,8 +99,14 @@ class MiniVectorStore:
             sims = (self._mat @ q) / (self._norms.ravel() * q_norm)
             # Partial sort is faster than full argsort for large N
             k = min(top_k, len(sims))
-            idxs = np.argpartition(-sims, k)[:k]
-            idxs = idxs[np.argsort(-sims[idxs])]  # sort the top-k
+            if k <= 0:
+                return []
+            if k >= len(sims):
+                # Fewer docs than requested — just sort everything
+                idxs = np.argsort(-sims)[:k]
+            else:
+                idxs = np.argpartition(-sims, k)[:k]
+                idxs = idxs[np.argsort(-sims[idxs])]  # sort the top-k
             results = []
             for idx in idxs:
                 results.append({
@@ -178,6 +184,7 @@ class LLMProvider:
         self.backend = "offline"
         self._client = None
         self._model_name = ""
+        self._gemini_new_sdk = False
         self._detect_backend()
 
     def _detect_backend(self):
@@ -221,13 +228,30 @@ class LLMProvider:
 
     def _configure_gemini(self, api_key: str):
         """Configure Google Gemini backend with the given API key."""
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+        # Try new google-genai SDK first
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            self._client = genai.GenerativeModel("gemini-3-flash-preview")
+            from google import genai as _genai
+            self._client = _genai.Client(api_key=api_key)
+            self._gemini_new_sdk = True
             self.backend = "gemini"
-            self._model_name = "gemini-3-flash-preview"
-            logger.info(f"LLMProvider: using Google Gemini ({self._model_name})")
+            self._model_name = model_name
+            logger.info(f"LLMProvider: using Google Gemini ({self._model_name}) [google-genai]")
+            return
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.warning(f"google-genai init failed: {exc}")
+
+        # Fallback to deprecated google-generativeai
+        try:
+            import google.generativeai as genai  # type: ignore[import]
+            genai.configure(api_key=api_key)
+            self._client = genai.GenerativeModel(model_name)
+            self._gemini_new_sdk = False
+            self.backend = "gemini"
+            self._model_name = model_name
+            logger.info(f"LLMProvider: using Google Gemini ({self._model_name}) [legacy SDK]")
         except Exception as exc:
             logger.warning(f"Gemini init failed: {exc}")
 
@@ -296,13 +320,26 @@ class LLMProvider:
     def _call_gemini(self, system_prompt: str, user_prompt: str) -> str:
         try:
             full_prompt = f"{system_prompt}\n\n{user_prompt}"
-            resp = self._client.generate_content(
-                full_prompt,
-                generation_config={
-                    "temperature": 0.3,
-                    "max_output_tokens": 1024,
-                },
-            )
+            if getattr(self, '_gemini_new_sdk', False):
+                # New google-genai SDK
+                from google.genai import types as _gtypes
+                resp = self._client.models.generate_content(
+                    model=self._model_name,
+                    contents=full_prompt,
+                    config=_gtypes.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=1024,
+                    ),
+                )
+            else:
+                # Legacy google-generativeai SDK
+                resp = self._client.generate_content(
+                    full_prompt,
+                    generation_config={
+                        "temperature": 0.3,
+                        "max_output_tokens": 1024,
+                    },
+                )
             return resp.text.strip()
         except Exception as exc:
             logger.error(f"Gemini call failed: {exc}")

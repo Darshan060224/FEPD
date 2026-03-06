@@ -496,11 +496,12 @@ class FEPDPipeline:
                     )
                     
                     if progress_callback:
+                        hash_display = (handler.image_hash[:16] + '...') if handler.image_hash else 'N/A'
                         progress_callback(
                             PipelineStage.MOUNT,
                             1,
                             1,
-                            f"Image validated: {handler.image_type.upper()} ({handler.image_hash[:16]}...)"
+                            f"Image validated: {handler.image_type.upper()} ({hash_display})"
                         )
                     
                     return
