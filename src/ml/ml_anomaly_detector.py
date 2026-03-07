@@ -444,8 +444,8 @@ class EventEncoder:
         if len(encoded) < 2:
             return {}
         
-        timestamp = datetime.fromtimestamp(encoded[0]) if encoded[0] > 0 else None
-        type_idx = int(encoded[1])
+        timestamp = datetime.fromtimestamp(float(encoded[0])) if encoded[0] > 0 else None
+        type_idx = int(float(encoded[1]))
         
         # Reverse vocabulary lookup
         event_type = 'unknown'

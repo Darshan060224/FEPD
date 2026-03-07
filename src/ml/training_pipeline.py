@@ -35,9 +35,17 @@ from dataclasses import dataclass
 from sklearn.model_selection import cross_val_score, GridSearchCV, StratifiedKFold
 from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif
 from sklearn.ensemble import VotingClassifier, StackingClassifier
-from imblearn.over_sampling import SMOTE
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.pipeline import Pipeline as ImbPipeline
+
+try:
+    from imblearn.over_sampling import SMOTE
+    from imblearn.under_sampling import RandomUnderSampler
+    from imblearn.pipeline import Pipeline as ImbPipeline
+    IMBLEARN_AVAILABLE = True
+except ImportError:
+    SMOTE = None
+    RandomUnderSampler = None
+    ImbPipeline = None
+    IMBLEARN_AVAILABLE = False
 
 from src.ml.specialized_models import (
     MalwareClassifier, EVTXAnomalyDetector, RegistryPersistenceDetector,
