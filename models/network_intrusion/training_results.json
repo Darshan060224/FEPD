@@ -1,0 +1,24 @@
+{
+  "best_model": "RandomForest",
+  "RandomForest": {
+    "accuracy": 0.90113,
+    "auc": 0.98432,
+    "precision": 0.98804,
+    "recall": 0.86521,
+    "f1": 0.92255
+  },
+  "XGBoost": {
+    "accuracy": 0.89972,
+    "auc": 0.984,
+    "precision": 0.98755,
+    "recall": 0.86354,
+    "f1": 0.92139
+  },
+  "Ensemble": {
+    "accuracy": 0.90058,
+    "auc": 0.98507,
+    "precision": 0.98784,
+    "recall": 0.86456,
+    "f1": 0.9221
+  }
+}

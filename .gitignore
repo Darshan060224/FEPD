@@ -88,6 +88,15 @@ known_hosts
 cases/
 !cases/index.json
 
+# ---------- Temporary / training dataset folder ----------
+tmp/
+
+# ---------- ML model binaries (too large for GitHub) ----------
+models/**/*.pkl
+models/**/*.h5
+models/**/*.pt
+models/**/*.onnx
+
 # ---------- Data folder (forensic images, processed data) ----------
 data/
 !data/cases/.gitkeep

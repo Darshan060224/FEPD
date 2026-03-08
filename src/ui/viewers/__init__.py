@@ -13,6 +13,7 @@ from .image_viewer import ImageViewer
 from .pdf_viewer import PDFViewer
 from .video_viewer import VideoViewer
 from .file_details import FileDetailsDialog
+from .viewer_dispatcher import ViewerDispatcher
 
 __all__ = [
     'BaseViewer',
@@ -22,4 +23,5 @@ __all__ = [
     'PDFViewer',
     'VideoViewer',
     'FileDetailsDialog',
+    'ViewerDispatcher',
 ]

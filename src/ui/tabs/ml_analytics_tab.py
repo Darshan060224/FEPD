@@ -179,6 +179,45 @@ class MLAnalysisWorker(QThread):
         })
 
 
+class HybridAnalysisWorker(QThread):
+    """Background worker for hybrid (network + artifact + rule) analysis."""
+    
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    
+    def __init__(self, events_df: pd.DataFrame):
+        super().__init__()
+        self.events_df = events_df
+    
+    def run(self):
+        try:
+            from src.ml.engine.hybrid_engine import HybridAnomalyEngine
+            
+            engine = HybridAnomalyEngine()
+            engine.load_network_model()
+            
+            events = self.events_df.to_dict("records")
+            
+            results = engine.analyse(
+                events,
+                progress_callback=lambda p, s: self.progress.emit(p, s),
+            )
+            
+            model_info = {}
+            if engine._network_model and engine._network_model.is_loaded:
+                model_info = engine._network_model.get_model_info()
+            
+            self.finished.emit({
+                "results": [r.to_dict() for r in results],
+                "model_info": model_info,
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+
 class MLAnalyticsTab(QWidget):
     """
     ML Analytics Tab with three sub-tabs:
@@ -216,6 +255,7 @@ class MLAnalyticsTab(QWidget):
         self.sub_tabs = QTabWidget()
         self.sub_tabs.addTab(self._create_anomaly_tab(), "🔍 Anomaly Detection")
         self.sub_tabs.addTab(self._create_ueba_tab(), "👤 UEBA Profiling")
+        self.sub_tabs.addTab(self._create_network_intrusion_tab(), "🌐 Network Intrusion")
         self.sub_tabs.addTab(self._create_threat_intel_tab(), "🛡️ Threat Intelligence")
         
         layout.addWidget(self.sub_tabs)
@@ -352,6 +392,192 @@ class MLAnalyticsTab(QWidget):
         layout.addWidget(splitter)
         
         return widget
+    
+    def _create_network_intrusion_tab(self) -> QWidget:
+        """Create Network Intrusion Detection sub-tab (UNSW-NB15 + Hybrid engine)."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Model info card
+        info_group = QGroupBox("Network Intrusion Detection (UNSW-NB15)")
+        info_layout = QVBoxLayout(info_group)
+        
+        self.ni_model_info = QLabel(
+            "Trained on UNSW-NB15 dataset — detects network-based attacks.\n\n"
+            "Hybrid pipeline:\n"
+            "  • Supervised model (RandomForest / XGBoost / Ensemble)\n"
+            "  • Case-adaptive IsolationForest (behavioural baseline)\n"
+            "  • Rule-based forensic detector (known attack techniques)\n\n"
+            "Fused score → severity classification → results table."
+        )
+        info_layout.addWidget(self.ni_model_info)
+        layout.addWidget(info_group)
+        
+        # Controls
+        controls_layout = QHBoxLayout()
+        
+        btn_run_hybrid = QPushButton("▶️ Run Hybrid Detection")
+        btn_run_hybrid.clicked.connect(self._run_hybrid_analysis)
+        btn_run_hybrid.setMinimumHeight(40)
+        controls_layout.addWidget(btn_run_hybrid)
+        
+        btn_model_info = QPushButton("ℹ️ Model Info")
+        btn_model_info.clicked.connect(self._show_model_info)
+        controls_layout.addWidget(btn_model_info)
+        
+        layout.addLayout(controls_layout)
+        
+        # Progress
+        self.ni_progress = QProgressBar()
+        self.ni_progress.setVisible(False)
+        layout.addWidget(self.ni_progress)
+        
+        self.ni_status = QLabel("")
+        layout.addWidget(self.ni_status)
+        
+        # Results table
+        self.ni_table = QTableWidget(0, 8)
+        self.ni_table.setHorizontalHeaderLabels([
+            "Timestamp", "Event", "Source", "Severity",
+            "Score", "Network", "Artifact", "Flags"
+        ])
+        self.ni_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.ni_table)
+        
+        # Summary text
+        self.ni_summary = QTextEdit()
+        self.ni_summary.setReadOnly(True)
+        self.ni_summary.setMaximumHeight(140)
+        layout.addWidget(self.ni_summary)
+        
+        return widget
+    
+    def _run_hybrid_analysis(self):
+        """Run the hybrid anomaly detection pipeline."""
+        if self.events_df is None or self.events_df.empty:
+            self.ni_status.setText("⚠️ No events loaded. Please ingest data first.")
+            return
+        
+        self.ni_progress.setVisible(True)
+        self.ni_progress.setValue(0)
+        self.ni_status.setText("Starting hybrid analysis…")
+        
+        # Run in a background thread
+        self.worker = HybridAnalysisWorker(self.events_df)
+        self.worker.progress.connect(lambda p, s: self._update_hybrid_progress(p, s))
+        self.worker.finished.connect(self._on_hybrid_complete)
+        self.worker.error.connect(lambda e: self._on_hybrid_error(e))
+        self.worker.start()
+    
+    def _update_hybrid_progress(self, pct: int, msg: str):
+        self.ni_progress.setValue(pct)
+        self.ni_status.setText(msg)
+    
+    def _on_hybrid_complete(self, results: dict):
+        self.ni_progress.setVisible(False)
+        hybrid_results = results.get("results", [])
+        model_info = results.get("model_info", {})
+        
+        # Populate table
+        self.ni_table.setRowCount(0)
+        total = len(hybrid_results)
+        anomalies = 0
+        
+        for r in hybrid_results:
+            if isinstance(r, dict):
+                row = r
+            else:
+                row = r.to_dict()
+            
+            severity = row.get("severity", "LOW")
+            if severity in ("HIGH", "CRITICAL"):
+                anomalies += 1
+            
+            row_idx = self.ni_table.rowCount()
+            self.ni_table.insertRow(row_idx)
+            
+            self.ni_table.setItem(row_idx, 0, QTableWidgetItem(str(row.get("timestamp", ""))))
+            self.ni_table.setItem(row_idx, 1, QTableWidgetItem(str(row.get("event", ""))))
+            self.ni_table.setItem(row_idx, 2, QTableWidgetItem(str(row.get("source", ""))))
+            
+            sev_item = QTableWidgetItem(severity)
+            if severity == "CRITICAL":
+                sev_item.setBackground(QColor(255, 50, 50))
+            elif severity == "HIGH":
+                sev_item.setBackground(QColor(255, 130, 80))
+            elif severity == "MEDIUM":
+                sev_item.setBackground(QColor(255, 220, 100))
+            self.ni_table.setItem(row_idx, 3, sev_item)
+            
+            score = row.get("score", 0)
+            score_item = QTableWidgetItem(f"{score:.3f}")
+            if score > 0.8:
+                score_item.setBackground(QColor(255, 100, 100))
+            elif score > 0.6:
+                score_item.setBackground(QColor(255, 200, 100))
+            self.ni_table.setItem(row_idx, 4, score_item)
+            
+            self.ni_table.setItem(row_idx, 5, QTableWidgetItem(f"{row.get('network_score', 0):.2f}"))
+            self.ni_table.setItem(row_idx, 6, QTableWidgetItem(f"{row.get('artifact_score', 0):.2f}"))
+            self.ni_table.setItem(row_idx, 7, QTableWidgetItem(str(row.get("flags", ""))))
+        
+        # Summary
+        metrics = model_info.get("metrics", {})
+        summary_lines = [
+            "📊 Hybrid Detection Summary",
+            "",
+            f"Total Events Analyzed: {total}",
+            f"Anomalies Detected: {anomalies}",
+            f"Anomaly Rate: {anomalies/total:.2%}" if total else "Anomaly Rate: N/A",
+            "",
+        ]
+        if metrics:
+            summary_lines.append("Model Metrics (UNSW-NB15):")
+            summary_lines.append(f"  Accuracy:  {metrics.get('accuracy', 0):.4f}")
+            summary_lines.append(f"  AUC:       {metrics.get('auc', 0):.4f}")
+            summary_lines.append(f"  F1 Score:  {metrics.get('f1', 0):.4f}")
+        
+        self.ni_summary.setText("\n".join(summary_lines))
+        self.ni_status.setText(f"✅ Found {anomalies} anomalies in {total} events")
+    
+    def _on_hybrid_error(self, err: str):
+        self.ni_progress.setVisible(False)
+        self.ni_status.setText(f"❌ Error: {err}")
+    
+    def _show_model_info(self):
+        """Show trained model metadata in a dialog."""
+        from PyQt6.QtWidgets import QMessageBox
+        try:
+            from src.ml.models.network_intrusion_model import NetworkIntrusionModel
+            model = NetworkIntrusionModel()
+            if not model.load():
+                QMessageBox.warning(self, "Model Not Found",
+                    "No trained model found.\n\nRun:\n  python scripts/ml/train_unsw_nb15.py")
+                return
+            info = model.get_model_info()
+            metrics = info.get("metrics", {})
+            top_feats = info.get("top_features", {})
+            
+            text = (
+                f"Model: {info.get('name', '?')}\n"
+                f"Version: {info.get('version', '?')}\n"
+                f"Dataset: {info.get('dataset', '?')}\n"
+                f"Trained: {info.get('trained_date', '?')}\n"
+                f"Features: {info.get('n_features', 0)}\n\n"
+                f"Metrics:\n"
+                f"  Accuracy:  {metrics.get('accuracy', 0):.4f}\n"
+                f"  AUC:       {metrics.get('auc', 0):.4f}\n"
+                f"  Precision: {metrics.get('precision', 0):.4f}\n"
+                f"  Recall:    {metrics.get('recall', 0):.4f}\n"
+                f"  F1:        {metrics.get('f1', 0):.4f}\n\n"
+                f"Top Features:\n"
+            )
+            for feat, imp in list(top_feats.items())[:10]:
+                text += f"  {feat}: {imp:.4f}\n"
+            
+            QMessageBox.information(self, "Network Intrusion Model", text)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
     
     def _create_threat_intel_tab(self) -> QWidget:
         """Create Threat Intelligence sub-tab."""

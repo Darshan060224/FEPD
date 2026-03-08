@@ -503,7 +503,10 @@ class VFSBuilder:
         try:
             disk_name = disk_name or image_path.stem
             
-            # Create disk node
+            # Ensure "This PC" root node exists
+            self._ensure_root_node(evidence_id)
+            
+            # Create disk node under root
             disk_node = create_disk_node(
                 disk_name=disk_name,
                 disk_info=f"Evidence: {evidence_id}",
@@ -825,6 +828,20 @@ class VFSBuilder:
                 logger.debug(f"Error processing entry: {e}")
                 continue
     
+    def _ensure_root_node(self, evidence_id: str = None):
+        """Ensure 'This PC' root node exists in the VFS."""
+        existing = self.vfs.get_node("/")
+        if not existing:
+            root_node = VFSNode(
+                id=0,
+                path="/",
+                name="This PC",
+                parent_path="",
+                node_type=VFSNodeType.ROOT,
+                evidence_id=evidence_id,
+            )
+            self.vfs.add_node(root_node)
+
     def _add_node(self, node: VFSNode):
         """Add node to batch, flush if batch is full."""
         self._nodes_batch.append(node)
@@ -850,6 +867,9 @@ class VFSBuilder:
         logger.warning("Using fallback VFS builder (pytsk3 not available)")
         
         disk_name = disk_name or image_path.stem
+        
+        # Ensure "This PC" root node exists
+        self._ensure_root_node(evidence_id)
         
         # Create basic structure
         disk_node = create_disk_node(

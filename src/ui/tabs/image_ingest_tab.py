@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
     QFileDialog, QMessageBox, QGroupBox, QSplitter,
     QLineEdit, QProgressBar, QFrame, QInputDialog,
+    QScrollArea, QGridLayout, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QFont
@@ -65,6 +66,8 @@ from src.evidence.evidence_manager import EvidenceManager
 from src.evidence.image_registry import ImageRegistry
 from src.core.case_manager import CaseManager
 from src.core.chain_of_custody import ChainLogger
+from src.services.evidence_summary import EvidenceSummaryService
+from src.services.quick_alerts import QuickAlertsService
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +324,401 @@ class ImageIngestTab(QWidget):
         status_group.setLayout(status_lay)
         root.addWidget(status_group)
 
+        # ── Evidence Overview Dashboard (hidden until ingestion completes) ──
+        self._build_dashboard(root)
+
+    # ------------------------------------------------------------------
+    # Evidence Overview Dashboard
+    # ------------------------------------------------------------------
+
+    def _build_dashboard(self, root: QVBoxLayout) -> None:
+        """Build the Smart Evidence Overview Dashboard (initially hidden)."""
+        self.dashboard_frame = QFrame()
+        self.dashboard_frame.setVisible(False)
+        self.dashboard_frame.setStyleSheet(
+            "QFrame#dashboard { border: 1px solid #3e3e42; border-radius: 8px; "
+            "background: #1e1e1e; }"
+        )
+        self.dashboard_frame.setObjectName("dashboard")
+        dash_root = QVBoxLayout(self.dashboard_frame)
+        dash_root.setContentsMargins(16, 12, 16, 16)
+        dash_root.setSpacing(12)
+
+        # Dashboard title
+        title = QLabel("📊 Smart Evidence Overview")
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        title.setStyleSheet("color: #4fc3f7; padding-bottom: 4px;")
+        dash_root.addWidget(title)
+
+        # ── ROW 1: Evidence Info  |  System Overview ──
+        row1 = QHBoxLayout()
+        row1.setSpacing(12)
+
+        # -- Evidence Information --
+        self._grp_evidence = QGroupBox("Evidence Information")
+        self._grp_evidence.setStyleSheet(self._dash_group_style())
+        ev_grid = QGridLayout()
+        ev_grid.setVerticalSpacing(6)
+        ev_grid.setHorizontalSpacing(12)
+        self._ev_labels = {}
+        ev_fields = [
+            ("Image Name", "image_name"),
+            ("Image Size", "image_size"),
+            ("Filesystem", "filesystem"),
+            ("Partitions", "partitions"),
+            ("Mount Points", "mount_points"),
+            ("SHA-256", "sha256"),
+        ]
+        for i, (label_text, key) in enumerate(ev_fields):
+            lbl = QLabel(f"{label_text}:")
+            lbl.setStyleSheet("color: #9e9e9e; font-size: 12px;")
+            val = QLabel("—")
+            val.setStyleSheet("color: #e0e0e0; font-size: 12px; font-weight: bold;")
+            val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            val.setWordWrap(True)
+            ev_grid.addWidget(lbl, i, 0)
+            ev_grid.addWidget(val, i, 1)
+            self._ev_labels[key] = val
+        self._grp_evidence.setLayout(ev_grid)
+        row1.addWidget(self._grp_evidence)
+
+        # -- System Overview --
+        self._grp_system = QGroupBox("System Overview")
+        self._grp_system.setStyleSheet(self._dash_group_style())
+        sys_grid = QGridLayout()
+        sys_grid.setVerticalSpacing(6)
+        sys_grid.setHorizontalSpacing(12)
+        self._sys_labels = {}
+        sys_fields = [
+            ("Operating System", "os"),
+            ("Total Files", "total_files"),
+            ("Total Folders", "total_folders"),
+            ("Deleted Files", "deleted"),
+            ("User Accounts", "users"),
+        ]
+        for i, (label_text, key) in enumerate(sys_fields):
+            lbl = QLabel(f"{label_text}:")
+            lbl.setStyleSheet("color: #9e9e9e; font-size: 12px;")
+            val = QLabel("—")
+            val.setStyleSheet("color: #e0e0e0; font-size: 12px; font-weight: bold;")
+            sys_grid.addWidget(lbl, i, 0)
+            sys_grid.addWidget(val, i, 1)
+            self._sys_labels[key] = val
+        self._grp_system.setLayout(sys_grid)
+        row1.addWidget(self._grp_system)
+
+        dash_root.addLayout(row1)
+
+        # ── ROW 2: User Accounts  |  Recent Activity ──
+        row2 = QHBoxLayout()
+        row2.setSpacing(12)
+
+        # -- User Accounts Table --
+        self._grp_users = QGroupBox("👤 User Accounts")
+        self._grp_users.setStyleSheet(self._dash_group_style())
+        users_lay = QVBoxLayout()
+        self.tbl_users = QTableWidget(0, 4)
+        self.tbl_users.setHorizontalHeaderLabels(
+            ["User Name", "Home Directory", "Files", "Last Activity"]
+        )
+        self.tbl_users.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_users.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_users.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl_users.setMaximumHeight(160)
+        self.tbl_users.setStyleSheet(self._dash_table_style())
+        users_lay.addWidget(self.tbl_users)
+        self._grp_users.setLayout(users_lay)
+        row2.addWidget(self._grp_users, stretch=3)
+
+        # -- Recent Activity --
+        self._grp_activity = QGroupBox("⏱ Recent Activity")
+        self._grp_activity.setStyleSheet(self._dash_group_style())
+        act_grid = QGridLayout()
+        act_grid.setVerticalSpacing(6)
+        self._act_labels = {}
+        act_fields = [
+            ("Last File Created", "created"),
+            ("Last File Modified", "modified"),
+            ("Last File Accessed", "accessed"),
+        ]
+        for i, (label_text, key) in enumerate(act_fields):
+            lbl = QLabel(f"{label_text}:")
+            lbl.setStyleSheet("color: #9e9e9e; font-size: 12px;")
+            val = QLabel("—")
+            val.setStyleSheet("color: #e0e0e0; font-size: 12px; font-weight: bold;")
+            act_grid.addWidget(lbl, i, 0)
+            act_grid.addWidget(val, i, 1)
+            self._act_labels[key] = val
+        self._grp_activity.setLayout(act_grid)
+        row2.addWidget(self._grp_activity, stretch=2)
+
+        dash_root.addLayout(row2)
+
+        # ── ROW 3: File Categories  |  Important Folders ──
+        row3 = QHBoxLayout()
+        row3.setSpacing(12)
+
+        # -- File Category Summary --
+        self._grp_categories = QGroupBox("📊 File Category Summary")
+        self._grp_categories.setStyleSheet(self._dash_group_style())
+        cat_lay = QVBoxLayout()
+        self.tbl_categories = QTableWidget(0, 3)
+        self.tbl_categories.setHorizontalHeaderLabels(["Category", "Count", "Size"])
+        self.tbl_categories.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_categories.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_categories.setMaximumHeight(220)
+        self.tbl_categories.setStyleSheet(self._dash_table_style())
+        cat_lay.addWidget(self.tbl_categories)
+
+        # Disk usage bar (text-based — no matplotlib dependency)
+        self.lbl_disk_usage = QLabel("")
+        self.lbl_disk_usage.setStyleSheet("color: #bbb; font-size: 11px; padding-top: 4px;")
+        self.lbl_disk_usage.setWordWrap(True)
+        cat_lay.addWidget(self.lbl_disk_usage)
+
+        self._grp_categories.setLayout(cat_lay)
+        row3.addWidget(self._grp_categories, stretch=3)
+
+        # -- Important Folders --
+        self._grp_folders = QGroupBox("📂 Important Folders")
+        self._grp_folders.setStyleSheet(self._dash_group_style())
+        folders_lay = QVBoxLayout()
+        self.tbl_folders = QTableWidget(0, 3)
+        self.tbl_folders.setHorizontalHeaderLabels(["Folder", "Files", "Size"])
+        self.tbl_folders.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_folders.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_folders.setMaximumHeight(220)
+        self.tbl_folders.setStyleSheet(self._dash_table_style())
+        folders_lay.addWidget(self.tbl_folders)
+        self._grp_folders.setLayout(folders_lay)
+        row3.addWidget(self._grp_folders, stretch=2)
+
+        dash_root.addLayout(row3)
+
+        # ── ROW 4: Most Active Folders ──
+        self._grp_active = QGroupBox("🔥 Most Active Folders")
+        self._grp_active.setStyleSheet(self._dash_group_style())
+        active_lay = QVBoxLayout()
+        self.tbl_active = QTableWidget(0, 3)
+        self.tbl_active.setHorizontalHeaderLabels(["Folder", "Modified Files", "Latest Activity"])
+        self.tbl_active.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_active.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_active.setMaximumHeight(180)
+        self.tbl_active.setStyleSheet(self._dash_table_style())
+        active_lay.addWidget(self.tbl_active)
+        self._grp_active.setLayout(active_lay)
+        dash_root.addWidget(self._grp_active)
+
+        # ── ROW 5: Quick Alerts ──
+        self._grp_alerts = QGroupBox("⚠️ Quick Alerts — Suspicious Indicators")
+        self._grp_alerts.setStyleSheet(self._dash_group_style())
+        alerts_lay = QVBoxLayout()
+        self.lbl_alerts = QLabel("No alerts.")
+        self.lbl_alerts.setStyleSheet("color: #bbb; font-size: 12px;")
+        self.lbl_alerts.setWordWrap(True)
+        alerts_lay.addWidget(self.lbl_alerts)
+        self._grp_alerts.setLayout(alerts_lay)
+        dash_root.addWidget(self._grp_alerts)
+
+        # Wrap dashboard in a scroll area so it works on small screens
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.dashboard_frame)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setVisible(False)
+        self._dashboard_scroll = scroll
+        root.addWidget(scroll, stretch=2)
+
+    # ------------------------------------------------------------------
+    # Dashboard population
+    # ------------------------------------------------------------------
+
+    def show_evidence_dashboard(self, summary, alerts=None) -> None:
+        """
+        Populate and reveal the Evidence Overview Dashboard.
+
+        Parameters
+        ----------
+        summary : EvidenceSummary
+            Output of ``EvidenceSummaryService.generate()``.
+        alerts : list[Alert], optional
+            Output of ``QuickAlertsService.scan()``.
+        """
+        # ── Evidence info ──
+        self._ev_labels["image_name"].setText(summary.image_name or "—")
+        self._ev_labels["image_size"].setText(summary.image_size_display or "—")
+        self._ev_labels["filesystem"].setText(summary.filesystem or "—")
+        self._ev_labels["partitions"].setText(str(summary.partition_count))
+        self._ev_labels["mount_points"].setText(
+            ", ".join(summary.mount_points) if summary.mount_points else "—"
+        )
+        sha = summary.sha256 or "—"
+        self._ev_labels["sha256"].setText(sha[:16] + "…" if len(sha) > 16 else sha)
+        self._ev_labels["sha256"].setToolTip(sha)
+
+        # ── System overview ──
+        self._sys_labels["os"].setText(summary.os_detected or "—")
+        self._sys_labels["total_files"].setText(f"{summary.total_files:,}")
+        self._sys_labels["total_folders"].setText(f"{summary.total_folders:,}")
+        self._sys_labels["deleted"].setText(f"{summary.total_deleted:,}")
+        self._sys_labels["users"].setText(str(len(summary.user_accounts)))
+
+        # ── User accounts ──
+        self.tbl_users.setRowCount(0)
+        for u in summary.user_accounts:
+            row = self.tbl_users.rowCount()
+            self.tbl_users.insertRow(row)
+            self.tbl_users.setItem(row, 0, QTableWidgetItem(u.username))
+            self.tbl_users.setItem(row, 1, QTableWidgetItem(u.home_path))
+            self.tbl_users.setItem(row, 2, QTableWidgetItem(f"{u.file_count:,}"))
+            self.tbl_users.setItem(
+                row, 3, QTableWidgetItem(self._fmt_ts(u.last_activity))
+            )
+
+        # ── Recent activity ──
+        self._act_labels["created"].setText(self._fmt_ts(summary.last_file_created))
+        self._act_labels["modified"].setText(self._fmt_ts(summary.last_file_modified))
+        self._act_labels["accessed"].setText(self._fmt_ts(summary.last_file_accessed))
+
+        # ── File categories ──
+        self.tbl_categories.setRowCount(0)
+        cat_order = [
+            "Images", "Videos", "Documents", "Executables",
+            "Archives", "Audio", "Databases", "Email", "Other",
+        ]
+        for cat in cat_order:
+            cnt = summary.category_counts.get(cat, 0)
+            if cnt == 0:
+                continue
+            row = self.tbl_categories.rowCount()
+            self.tbl_categories.insertRow(row)
+            self.tbl_categories.setItem(row, 0, QTableWidgetItem(cat))
+            self.tbl_categories.setItem(row, 1, QTableWidgetItem(f"{cnt:,}"))
+            sz = summary.category_sizes.get(cat, 0)
+            self.tbl_categories.setItem(row, 2, QTableWidgetItem(self._human_size(sz)))
+
+        # Disk usage text bar
+        usage_parts = []
+        for cat, pct in summary.disk_usage_pct.items():
+            if pct >= 1.0:
+                usage_parts.append(f"{cat}: {pct:.0f}%")
+        self.lbl_disk_usage.setText("Disk usage: " + "  ·  ".join(usage_parts) if usage_parts else "")
+
+        # ── Important folders ──
+        self.tbl_folders.setRowCount(0)
+        for f in summary.important_folders:
+            row = self.tbl_folders.rowCount()
+            self.tbl_folders.insertRow(row)
+            self.tbl_folders.setItem(row, 0, QTableWidgetItem(f.name))
+            self.tbl_folders.setItem(row, 1, QTableWidgetItem(f"{f.file_count:,}"))
+            self.tbl_folders.setItem(row, 2, QTableWidgetItem(self._human_size(f.total_size)))
+
+        # ── Most active folders ──
+        self.tbl_active.setRowCount(0)
+        for f in summary.most_active_folders:
+            row = self.tbl_active.rowCount()
+            self.tbl_active.insertRow(row)
+            self.tbl_active.setItem(row, 0, QTableWidgetItem(f.name or f.path))
+            self.tbl_active.setItem(row, 1, QTableWidgetItem(f"{f.modified_count:,}"))
+            self.tbl_active.setItem(
+                row, 2, QTableWidgetItem(self._fmt_ts(f.latest_modified))
+            )
+
+        # ── Quick alerts ──
+        if alerts:
+            lines = []
+            for a in alerts:
+                sev_color = {
+                    "high": "#f44336", "medium": "#ff9800", "low": "#4caf50"
+                }.get(a.severity, "#bbb")
+                lines.append(
+                    f'<span style="color:{sev_color}; font-weight:bold;">'
+                    f'{a.icon} {a.title}</span> — {a.detail}'
+                )
+            self.lbl_alerts.setText("<br>".join(lines))
+            self._grp_alerts.setVisible(True)
+        else:
+            self.lbl_alerts.setText(
+                '<span style="color:#4caf50;">✅ No suspicious indicators detected.</span>'
+            )
+            self._grp_alerts.setVisible(True)
+
+        # Show dashboard
+        self.dashboard_frame.setVisible(True)
+        self._dashboard_scroll.setVisible(True)
+
+    def _generate_dashboard(self, evidence: EvidenceImage) -> None:
+        """Run the summary + alerts services and populate the dashboard."""
+        try:
+            vfs = getattr(self, "_vfs", None)
+            if vfs is None:
+                # Try to obtain VFS through the parent main window
+                main = self.window()
+                vfs = getattr(main, "vfs", None)
+            if vfs is None:
+                logger.warning("VFS not available — dashboard skipped")
+                return
+            summary = EvidenceSummaryService(vfs).generate(
+                image_name=evidence.name,
+                image_size=evidence.size,
+                sha256=evidence.sha256,
+                filesystem=getattr(evidence, "filesystem", ""),
+                partitions=getattr(evidence, "partitions", None),
+            )
+            alerts = QuickAlertsService(vfs).scan()
+            self.show_evidence_dashboard(summary, alerts)
+        except Exception as exc:
+            logger.error("Dashboard generation failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Dashboard style helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _dash_group_style() -> str:
+        return (
+            "QGroupBox { font-weight: bold; font-size: 12px; color: #bbb; "
+            "border: 1px solid #3e3e42; border-radius: 6px; margin-top: 8px; "
+            "padding-top: 14px; background: #252526; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; "
+            "padding: 0 6px; color: #ccc; }"
+        )
+
+    @staticmethod
+    def _dash_table_style() -> str:
+        return (
+            "QTableWidget { background: #1e1e1e; alternate-background-color: #252526; "
+            "gridline-color: #3e3e42; font-size: 11px; }"
+            "QHeaderView::section { background: #2d2d30; color: #ccc; "
+            "border: 1px solid #3e3e42; padding: 4px; font-weight: bold; }"
+        )
+
+    @staticmethod
+    def _fmt_ts(ts: Optional[str]) -> str:
+        """Format a timestamp string for display."""
+        if not ts:
+            return "—"
+        # Truncate to first 19 chars (YYYY-MM-DD HH:MM:SS)
+        return ts[:19] if len(ts) > 19 else ts
+
+    @staticmethod
+    def _human_size(size: float) -> str:
+        if size <= 0:
+            return "0 B"
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if abs(size) < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} PB"
+
     # ------------------------------------------------------------------
     # Button actions
     # ------------------------------------------------------------------
@@ -554,6 +952,9 @@ class ImageIngestTab(QWidget):
         # Populate UI tables
         self._add_evidence_row(evidence)
         self._populate_partition_table(partitions)
+
+        # ── Smart Evidence Overview Dashboard ──
+        self._generate_dashboard(evidence)
 
         # Signal downstream tabs
         self.ingest_complete.emit(result.to_dict())

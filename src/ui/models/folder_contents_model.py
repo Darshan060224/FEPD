@@ -48,11 +48,15 @@ class FolderContentsModel(QAbstractTableModel):
       • Lazy hash display (updated externally via ``update_hash``)
       • Strikethrough + muted colour for deleted files
       • Highlight colour for suspicious files
+      • Batch loading for large directories (500 entries at a time)
     """
+
+    BATCH_SIZE = 500  # Load this many entries at a time
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._entries: List[FileEntry] = []
+        self._all_entries: List[FileEntry] = []  # Full dataset (for pagination)
         self._hash_overrides: Dict[str, str] = {}  # path → sha256 (from HashService)
 
     # ------------------------------------------------------------------
@@ -60,10 +64,37 @@ class FolderContentsModel(QAbstractTableModel):
     # ------------------------------------------------------------------
 
     def set_entries(self, entries: List[FileEntry]) -> None:
-        """Replace the entire dataset."""
+        """Replace the entire dataset with batch loading for large sets."""
         self.beginResetModel()
-        self._entries = list(entries)
+        self._all_entries = list(entries)
+        # Load first batch
+        self._entries = self._all_entries[:self.BATCH_SIZE]
         self.endResetModel()
+
+    def load_next_batch(self) -> bool:
+        """Load the next batch of entries. Returns True if more entries were loaded."""
+        current_count = len(self._entries)
+        total_count = len(self._all_entries)
+        if current_count >= total_count:
+            return False
+
+        next_batch_end = min(current_count + self.BATCH_SIZE, total_count)
+        self.beginInsertRows(
+            QModelIndex(), current_count, next_batch_end - 1
+        )
+        self._entries = self._all_entries[:next_batch_end]
+        self.endInsertRows()
+        return next_batch_end < total_count
+
+    @property
+    def has_more(self) -> bool:
+        """Check if there are more entries to load."""
+        return len(self._entries) < len(self._all_entries)
+
+    @property
+    def total_count(self) -> int:
+        """Total number of entries (including not-yet-loaded)."""
+        return len(self._all_entries)
 
     def get_entry(self, row: int) -> Optional[FileEntry]:
         if 0 <= row < len(self._entries):

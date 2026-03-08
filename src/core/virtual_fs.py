@@ -386,13 +386,12 @@ class VirtualFilesystem:
         return [self._row_to_node(row) for row in cursor.fetchall()]
     
     def get_root_nodes(self) -> List[VFSNode]:
-        """Get top-level nodes (disks/evidence roots)."""
+        """Get top-level nodes (disks/evidence roots parented under '/')."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        # Root nodes have parent_path as '', NULL, or '/'
+
         cursor.execute(
-            "SELECT * FROM virtual_fs WHERE parent_path = '' OR parent_path IS NULL OR parent_path = '/' ORDER BY name"
+            "SELECT * FROM virtual_fs WHERE parent_path = '/' OR parent_path = '' OR parent_path IS NULL ORDER BY name"
         )
         
         return [self._row_to_node(row) for row in cursor.fetchall()]
@@ -769,13 +768,13 @@ def create_disk_node(
     disk_info: str = None,
     evidence_id: str = None
 ) -> VFSNode:
-    """Create disk node."""
+    """Create disk node under the 'This PC' root."""
     path = f"/{disk_name}"
     return VFSNode(
         id=0,
         path=path,
         name=disk_name,
-        parent_path="",
+        parent_path="/",
         node_type=VFSNodeType.DISK,
         evidence_id=evidence_id,
         partition_info=disk_info,

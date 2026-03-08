@@ -141,7 +141,12 @@ class MainWindow(QMainWindow):
         if self.files_tab:
             self.tabs.addTab(self.files_tab, "🗂️ Files")
         
-        # Tab 3: Artifacts
+        # Tab 3: Configuration (Host Profile)
+        from .tabs.configuration_tab import ConfigurationTab
+        self.configuration_tab = ConfigurationTab()
+        self.tabs.addTab(self.configuration_tab, "⚙ Configuration")
+        
+        # Tab 4: Artifacts
         self.artifacts_tab = self._create_artifacts_tab()
         self.tabs.addTab(self.artifacts_tab, "🔍 Artifacts")
         
@@ -346,6 +351,12 @@ class MainWindow(QMainWindow):
             )
             
             self.files_tab_widget = files_tab
+            
+            # Wire VFS + read_file into the FEPD Terminal
+            terminal = getattr(self, 'fepd_terminal', None)
+            if terminal and hasattr(terminal, 'set_vfs'):
+                terminal.set_vfs(self.vfs)
+                terminal.set_read_file_func(read_file_func)
             
             return files_tab
             
@@ -2764,6 +2775,13 @@ class MainWindow(QMainWindow):
                         
                         self.files_tab_widget.read_file_func = read_file_from_image
                         self.files_tab_widget.refresh()
+                    
+                    # Wire updated read_file and VFS into the terminal
+                    terminal = getattr(self, 'fepd_terminal', None)
+                    if terminal and hasattr(terminal, 'set_read_file_func'):
+                        terminal.set_read_file_func(read_file_from_image)
+                        if hasattr(self, 'vfs') and self.vfs and hasattr(terminal, 'set_vfs'):
+                            terminal.set_vfs(self.vfs)
                     
                     # Build tree view from partitions - simple structure
                     stats = vefs_builder.stats

@@ -37,6 +37,13 @@ _MAGIC_SIGS: list[Tuple[bytes, str]] = [
     (b"RIFF",                "image"),   # WEBP (checked further below)
     (b"\x00\x00\x01\x00",  "image"),   # ICO
     (b"%PDF",                "pdf"),
+    (b"MZ",                  "pe"),      # PE executable (EXE/DLL)
+    (b"PK\x03\x04",         "archive"), # ZIP/JAR/DOCX/XLSX
+    (b"Rar!\x1a\x07",       "archive"), # RAR
+    (b"7z\xbc\xaf\x27\x1c", "archive"), # 7-Zip
+    (b"\x1f\x8b",           "archive"), # GZIP
+    (b"BZh",                 "archive"), # BZIP2
+    (b"\xfd7zXZ\x00",       "archive"), # XZ
 ]
 
 
@@ -76,6 +83,15 @@ _VIDEO_EXTENSIONS: Set[str] = {
 }
 
 _PDF_EXTENSIONS: Set[str] = {"pdf"}
+
+_PE_EXTENSIONS: Set[str] = {
+    "exe", "dll", "sys", "com", "ocx", "drv", "scr",
+}
+
+_ARCHIVE_EXTENSIONS: Set[str] = {
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "cab",
+    "jar", "war", "apk", "ipa",
+}
 
 # Maximum bytes to read for a quick hex preview in the details panel
 _HEX_PREVIEW_BYTES = 512
@@ -124,7 +140,7 @@ class PreviewService:
           4. Fallback → hex
 
         Possible return values:
-          ``"text"`` | ``"hex"`` | ``"image"`` | ``"pdf"`` | ``"video"``
+          ``"text"`` | ``"hex"`` | ``"image"`` | ``"pdf"`` | ``"video"`` | ``"pe"`` | ``"archive"``
         """
         # 1. Magic bytes — most reliable for carved / mislabelled files
         if header_bytes:
@@ -139,6 +155,10 @@ class PreviewService:
 
         if ext in _PDF_EXTENSIONS:
             return "pdf"
+        if ext in _PE_EXTENSIONS:
+            return "pe"
+        if ext in _ARCHIVE_EXTENSIONS:
+            return "archive"
         if ext in _IMAGE_EXTENSIONS:
             return "image"
         if ext in _VIDEO_EXTENSIONS:
@@ -214,6 +234,10 @@ class PreviewService:
                 return self._preview_hex(path, file_size)
             elif vtype == "text":
                 return self._preview_text(path, file_size)
+            elif vtype == "pe":
+                return self._preview_pe(path, file_size)
+            elif vtype == "archive":
+                return self._preview_archive(path, file_size)
             else:
                 return self._preview_hex(path, file_size)
         except Exception as exc:
@@ -291,3 +315,122 @@ class PreviewService:
 
         # Thumbnail failed — report as none so caller can fall back to hex
         return {"type": "none", "data": "", "lines": 0}
+
+    def _preview_pe(self, path: str, file_size: int) -> Dict:
+        """Return PE metadata for executables (EXE/DLL/SYS)."""
+        assert self._read_file is not None
+        read_len = min(file_size, 2 * 1024 * 1024)  # Read up to 2MB for PE headers
+        data = self._read_file(path, 0, read_len)
+        if not data:
+            return {"type": "none", "data": "", "lines": 0}
+
+        lines = []
+        lines.append("═══ PE EXECUTABLE METADATA ═══\n")
+
+        try:
+            import pefile
+            pe = pefile.PE(data=data, fast_load=True)
+
+            # Basic info
+            machine_types = {0x14c: "x86 (32-bit)", 0x8664: "x64 (64-bit)", 0xAA64: "ARM64"}
+            machine = machine_types.get(pe.FILE_HEADER.Machine, f"0x{pe.FILE_HEADER.Machine:04X}")
+            lines.append(f"Architecture:    {machine}")
+            lines.append(f"Subsystem:       {'GUI' if pe.OPTIONAL_HEADER.Subsystem == 2 else 'Console' if pe.OPTIONAL_HEADER.Subsystem == 3 else str(pe.OPTIONAL_HEADER.Subsystem)}")
+            lines.append(f"Entry Point:     0x{pe.OPTIONAL_HEADER.AddressOfEntryPoint:08X}")
+            lines.append(f"Image Base:      0x{pe.OPTIONAL_HEADER.ImageBase:016X}")
+            lines.append(f"Sections:        {pe.FILE_HEADER.NumberOfSections}")
+
+            # Compile timestamp
+            import datetime
+            try:
+                ts = datetime.datetime.utcfromtimestamp(pe.FILE_HEADER.TimeDateStamp)
+                lines.append(f"Compile Time:    {ts.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+            except Exception:
+                lines.append(f"Compile Time:    0x{pe.FILE_HEADER.TimeDateStamp:08X}")
+
+            # DLL flag
+            is_dll = pe.FILE_HEADER.Characteristics & 0x2000
+            lines.append(f"Type:            {'DLL' if is_dll else 'EXE'}")
+
+            # Sections
+            lines.append(f"\n{'─' * 50}")
+            lines.append("SECTIONS:")
+            for section in pe.sections:
+                sec_name = section.Name.rstrip(b'\x00').decode('utf-8', errors='replace')
+                lines.append(f"  {sec_name:8s}  VAddr: 0x{section.VirtualAddress:08X}  Size: {section.SizeOfRawData:>8,}")
+
+            # Imports (first 20)
+            pe.parse_data_directories()
+            if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
+                lines.append(f"\n{'─' * 50}")
+                lines.append("IMPORTS (DLLs):")
+                for entry in pe.DIRECTORY_ENTRY_IMPORT[:20]:
+                    dll_name = entry.dll.decode('utf-8', errors='replace')
+                    func_count = len(entry.imports)
+                    lines.append(f"  {dll_name} ({func_count} functions)")
+
+            pe.close()
+
+        except ImportError:
+            # pefile not installed — show basic MZ header info + hex
+            lines.append("(Install 'pefile' for detailed PE analysis)\n")
+            if len(data) >= 64:
+                e_lfanew = int.from_bytes(data[60:64], 'little')
+                lines.append(f"MZ Header:       Present")
+                lines.append(f"PE Offset:       0x{e_lfanew:08X}")
+            hex_result = self._preview_hex(path, file_size)
+            lines.append(f"\n{'─' * 50}")
+            lines.append("HEX DUMP:")
+            lines.append(hex_result.get("data", ""))
+
+        except Exception as exc:
+            lines.append(f"PE parse error: {exc}\n")
+            hex_result = self._preview_hex(path, file_size)
+            lines.append(hex_result.get("data", ""))
+
+        text = "\n".join(lines)
+        return {"type": "text", "data": text, "lines": len(lines)}
+
+    def _preview_archive(self, path: str, file_size: int) -> Dict:
+        """Return archive contents listing."""
+        assert self._read_file is not None
+        read_len = min(file_size, 10 * 1024 * 1024)
+        data = self._read_file(path, 0, read_len)
+        if not data:
+            return {"type": "none", "data": "", "lines": 0}
+
+        lines = []
+        lines.append("═══ ARCHIVE CONTENTS ═══\n")
+
+        filename = path.rsplit("/", 1)[-1] if "/" in path else path
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+        try:
+            if ext in ("zip", "jar", "war", "apk", "ipa", "docx", "xlsx", "pptx"):
+                import zipfile
+                import io
+                with zipfile.ZipFile(io.BytesIO(data), 'r') as zf:
+                    lines.append(f"Type:    ZIP Archive")
+                    lines.append(f"Files:   {len(zf.namelist())}")
+                    lines.append(f"\n{'─' * 50}")
+                    lines.append(f"{'Name':<40s} {'Size':>10s}  {'Compressed':>10s}")
+                    lines.append(f"{'─'*40} {'─'*10}  {'─'*10}")
+                    for info in zf.infolist()[:100]:
+                        name = info.filename[:40]
+                        lines.append(f"{name:<40s} {info.file_size:>10,}  {info.compress_size:>10,}")
+                    if len(zf.namelist()) > 100:
+                        lines.append(f"\n... and {len(zf.namelist()) - 100} more files")
+            else:
+                # Unsupported archive — show hex
+                lines.append(f"Archive type: {ext.upper()}")
+                lines.append("(Detailed listing not available)\n")
+                hex_result = self._preview_hex(path, file_size)
+                lines.append(hex_result.get("data", ""))
+
+        except Exception as exc:
+            lines.append(f"Archive parse error: {exc}\n")
+            hex_result = self._preview_hex(path, file_size)
+            lines.append(hex_result.get("data", ""))
+
+        text = "\n".join(lines)
+        return {"type": "text", "data": text, "lines": len(lines)}

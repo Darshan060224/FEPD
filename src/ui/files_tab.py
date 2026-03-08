@@ -328,7 +328,7 @@ class _DetailsPanel(QFrame):
         # Properties
         self._props: Dict[str, QLabel] = {}
         for key in ("Size", "Created", "Modified", "Accessed", "Location",
-                     "SHA-256", "Evidence", "Partition", "Inode"):
+                     "SHA-256", "MD5", "MIME Type", "Evidence", "Partition", "Inode"):
             row = QHBoxLayout()
             lbl = QLabel(f"{key}:")
             lbl.setStyleSheet("color: #888; font-size: 11px; min-width: 65px;")
@@ -371,6 +371,21 @@ class _DetailsPanel(QFrame):
         self._preview.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self._preview, 1)
 
+        # Activities section — shows forensic artifact correlation
+        self._activities_title = QLabel("Activities")
+        self._activities_title.setStyleSheet("color: #888; font-size: 11px; font-weight: bold;")
+        lay.addWidget(self._activities_title)
+
+        self._activities = QLabel("")
+        self._activities.setStyleSheet(
+            "background: #1e1e1e; color: #c0c0c0; font-family: 'Consolas', monospace; "
+            "font-size: 10px; padding: 6px; border: 1px solid #333; border-radius: 3px;"
+        )
+        self._activities.setWordWrap(True)
+        self._activities.setMinimumHeight(60)
+        self._activities.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self._activities, 1)
+
         self._current_path: Optional[str] = None
         self._current_size: int = 0
 
@@ -392,10 +407,17 @@ class _DetailsPanel(QFrame):
         self._props["SHA-256"].setText(entry.sha256[:24] + "…" if entry.sha256 else "—")
         if entry.sha256:
             self._props["SHA-256"].setToolTip(entry.sha256)
+        self._props["MD5"].setText(entry.md5[:24] + "…" if entry.md5 else "—")
+        if entry.md5:
+            self._props["MD5"].setToolTip(entry.md5)
+        self._props["MIME Type"].setText(entry.mime_type or "—")
         self._props["Evidence"].setText(entry.evidence_id or "—")
         self._props["Partition"].setText(entry.partition_info or "—")
         self._props["Inode"].setText(str(entry.inode) if entry.inode else "—")
         self._btn_hash.setVisible(not entry.is_directory)
+
+        # Populate activities from artifact correlation
+        self._show_activities(entry)
 
     def show_preview(self, preview_data: Dict) -> None:
         ptype = preview_data.get("type", "none")
@@ -417,8 +439,10 @@ class _DetailsPanel(QFrame):
                 )
                 self._preview.setPixmap(scaled)
             else:
+                # Image decode failed → show hex fallback
                 self._preview.setPixmap(QPixmap())
-                self._preview.setText("⚠ Image could not be decoded — open in viewer for hex fallback")
+                self._preview.setText("⚠ Image could not be decoded — showing hex:\n\n"
+                                       "(Select file and press Ctrl+H for full hex view)")
         elif ptype == "image_bytes":
             # Legacy path: raw bytes — try quick decode for thumbnail
             try:
@@ -433,8 +457,9 @@ class _DetailsPanel(QFrame):
                     )
                     self._preview.setPixmap(scaled)
                 else:
+                    # Decode failed → hex fallback
                     self._preview.setPixmap(QPixmap())
-                    self._preview.setText("⚠ Image could not be decoded — open in viewer for hex fallback")
+                    self._preview.setText("⚠ Image could not be decoded — use Ctrl+H for hex view")
             except Exception:
                 self._preview.setPixmap(QPixmap())
                 self._preview.setText("[Image preview — open in viewer]")
@@ -445,6 +470,9 @@ class _DetailsPanel(QFrame):
     def update_hash(self, sha256: str, md5: str) -> None:
         self._props["SHA-256"].setText(sha256[:24] + "…")
         self._props["SHA-256"].setToolTip(f"SHA-256: {sha256}\nMD5: {md5}")
+        self._props["MD5"].setText(md5[:24] + "…" if md5 else "—")
+        if md5:
+            self._props["MD5"].setToolTip(md5)
 
     def clear(self) -> None:
         self._icon.setText("📁")
@@ -454,12 +482,79 @@ class _DetailsPanel(QFrame):
             v.setText("—")
         self._preview.setPixmap(QPixmap())
         self._preview.setText("")
+        self._activities.setText("")
         self._btn_hash.setVisible(False)
         self._current_path = None
 
     def _req_hash(self):
         if self._current_path:
             self.hash_requested.emit(self._current_path, self._current_size)
+
+    def _show_activities(self, entry: FileEntry) -> None:
+        """Show forensic artifact activities correlated with this file."""
+        if entry.is_directory:
+            self._activities.setText("")
+            return
+
+        activities = []
+        name_lower = entry.name.lower()
+        ext = entry.extension
+
+        # Timeline artifacts from timestamps
+        if entry.created:
+            activities.append(f"📅 {entry.display_created[:16]}  File Created  (MFT)")
+        if entry.modified:
+            activities.append(f"📅 {entry.display_modified_full[:16]}  File Modified  (MFT)")
+        if entry.accessed:
+            activities.append(f"📅 {entry.display_accessed[:16]}  File Accessed  (MFT)")
+
+        # Execution artifacts for executables
+        if ext in ("exe", "dll", "bat", "cmd", "ps1", "msi", "com", "scr", "vbs"):
+            activities.append(f"⚡ Executable type: {entry.display_type}")
+            path_lower = entry.path.lower()
+            if "/prefetch/" in path_lower:
+                activities.append("🔄 Referenced in Prefetch (execution evidence)")
+            if "/downloads/" in path_lower or "/desktop/" in path_lower:
+                activities.append("⚠ Located in user download/desktop area")
+            if entry.is_suspicious:
+                activities.append("🚨 Flagged as suspicious (double extension or user-area executable)")
+
+        # Deleted file activity
+        if entry.is_deleted:
+            activities.append("🗑️ File was DELETED (recovered from unallocated)")
+
+        # Registry artifacts
+        if ext in ("reg", "hiv"):
+            activities.append("🗝️ Registry data — may contain persistence keys")
+
+        # Email artifacts
+        if ext in ("pst", "ost", "eml", "msg", "mbox"):
+            activities.append("📧 Email artifact — may contain communications")
+
+        # Event log artifacts
+        if ext in ("evtx", "evt", "etl"):
+            activities.append("📋 Event log — contains system/security events")
+
+        # Browser data
+        if "history" in name_lower or "cookies" in name_lower or "cache" in name_lower:
+            activities.append("🌐 Browser artifact — web activity evidence")
+
+        # Shortcut (LNK) files
+        if ext == "lnk":
+            activities.append("🔗 Shortcut file — indicates file/program access")
+
+        # Prefetch files
+        if ext == "pf":
+            activities.append("🔄 Prefetch file — program execution evidence")
+
+        # Database files
+        if ext in ("db", "sqlite", "sqlite3"):
+            activities.append("🗃️ Database file — may contain structured evidence")
+
+        if not activities:
+            self._activities.setText("No correlated activities found")
+        else:
+            self._activities.setText("\n".join(activities))
 
 
 # ============================================================================
@@ -696,8 +791,8 @@ class FilesTab(QWidget):
         self.status_items.setStyleSheet("color: #888; font-size: 11px;")
         sb.addWidget(self.status_items)
         sb.addStretch()
-        self.status_ro = QLabel("🔒 Read-Only")
-        self.status_ro.setStyleSheet("color: #4caf50; font-size: 10px;")
+        self.status_ro = QLabel("🔒 Evidence is read-only — forensic integrity protected")
+        self.status_ro.setStyleSheet("color: #4caf50; font-size: 10px; font-weight: bold;")
         sb.addWidget(self.status_ro)
 
         root.addWidget(status)
@@ -721,6 +816,11 @@ class FilesTab(QWidget):
         self.contents_view.clicked.connect(self._on_contents_clicked)
         self.contents_view.doubleClicked.connect(self._on_contents_double_clicked)
         self.contents_view.customContextMenuRequested.connect(self._show_contents_ctx_menu)
+
+        # --- Lazy loading on scroll ---
+        vbar = self.contents_view.verticalScrollBar()
+        if vbar:
+            vbar.valueChanged.connect(self._on_scroll_near_end)
 
         # --- Breadcrumb ---
         self.breadcrumb.segment_clicked.connect(self._on_breadcrumb_segment)
@@ -819,8 +919,25 @@ class FilesTab(QWidget):
         folders = sum(1 for e in entries if e.is_directory)
         files = len(entries) - folders
         self.stats_label.setText(f"{folders} folders, {files} files")
-        self.status_items.setText(f"{len(entries)} items")
+        total = self._contents_model.total_count
+        loaded = self._contents_model.rowCount()
+        if total > loaded:
+            self.status_items.setText(f"{loaded} of {total} items loaded")
+        else:
+            self.status_items.setText(f"{total} items")
         self.details_panel.clear()
+
+    def _on_scroll_near_end(self, value: int):
+        """Load more entries when scroll nears the bottom."""
+        vbar = self.contents_view.verticalScrollBar()
+        if vbar and value >= vbar.maximum() - 50:
+            if self._contents_model.load_next_batch():
+                total = self._contents_model.total_count
+                loaded = self._contents_model.rowCount()
+                if total > loaded:
+                    self.status_items.setText(f"{loaded} of {total} items loaded")
+                else:
+                    self.status_items.setText(f"{total} items")
 
     def _on_path_changed(self, path: str):
         """Controller path changed → update breadcrumb + emit signal."""

@@ -19,6 +19,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import List, Optional, Callable, Dict
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Maximum number of entries kept in the back/forward history
 _HISTORY_MAX = 100
+
+# Maximum number of directory listings cached
+_DIR_CACHE_MAX = 50
 
 
 class FileNavigator(QObject):
@@ -65,6 +69,7 @@ class FileNavigator(QObject):
         self._back_stack: List[str] = []
         self._forward_stack: List[str] = []
         self._current_user: Optional[str] = None
+        self._dir_cache: OrderedDict[str, List[FileEntry]] = OrderedDict()
 
     # ------------------------------------------------------------------
     # Properties
@@ -165,9 +170,13 @@ class FileNavigator(QObject):
 
     def list_directory(self, path: str) -> List[FileEntry]:
         """
-        List directory contents with the standard file-manager ordering:
+        List directory contents with LRU caching and the standard
+        file-manager ordering:
           1. Folders first (sorted A-Z, case-insensitive)
           2. Files second  (sorted A-Z, case-insensitive)
+
+        Results are cached (up to ``_DIR_CACHE_MAX`` directories).
+        Call ``invalidate_cache()`` when evidence is reloaded.
 
         Args:
             path: VFS path to list.
@@ -175,6 +184,12 @@ class FileNavigator(QObject):
         Returns:
             Sorted ``list[FileEntry]``.
         """
+        # Check cache first
+        if path in self._dir_cache:
+            # Move to end (most recently used)
+            self._dir_cache.move_to_end(path)
+            return self._dir_cache[path]
+
         try:
             children: List[VFSNode] = self._vfs.get_children(path)
         except Exception as e:
@@ -193,7 +208,21 @@ class FileNavigator(QObject):
             key=lambda e: e.name.lower(),
         )
 
-        return folders + files
+        result = folders + files
+
+        # Store in cache
+        self._dir_cache[path] = result
+        if len(self._dir_cache) > _DIR_CACHE_MAX:
+            self._dir_cache.popitem(last=False)  # evict oldest
+
+        return result
+
+    def invalidate_cache(self, path: Optional[str] = None) -> None:
+        """Clear directory listing cache. If *path* given, only that entry."""
+        if path is None:
+            self._dir_cache.clear()
+        else:
+            self._dir_cache.pop(path, None)
 
     def get_node(self, path: str) -> Optional[VFSNode]:
         """Get the raw VFSNode for *path* (handy for the controller)."""

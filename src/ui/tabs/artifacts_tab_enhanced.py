@@ -34,16 +34,20 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem, QTableWidget, QTableWidgetItem, QLineEdit,
     QPushButton, QComboBox, QLabel, QTextEdit, QGroupBox,
     QHeaderView, QMenu, QCheckBox, QFrame, QScrollArea,
-    QProgressBar, QMessageBox
+    QProgressBar, QMessageBox, QTabWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
-from PyQt6.QtGui import QIcon, QColor, QBrush
+from PyQt6.QtGui import QIcon, QColor, QBrush, QFont
 
 # Local imports
 import sys
 sys.path.insert(0, str(__file__).replace('\\', '/').rsplit('/src/', 1)[0])
 from src.core.case_manager import CaseManager
 from src.core.chain_of_custody import ChainLogger
+from src.analysis.artifact_correlator import (
+    ArtifactCorrelator, ProcessTreeBuilder,
+    analyze_unknown_artifact, OPERATION_COLORS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +218,7 @@ class ArtifactsTab(QWidget):
     
     artifact_selected = pyqtSignal(dict)  # Emits selected artifact data
     scan_complete = pyqtSignal(int)  # Emits total artifacts found
+    jump_to_timeline = pyqtSignal(str)   # file path → filter timeline
     
     def __init__(self, case_manager: CaseManager, parent=None):
         super().__init__(parent)
@@ -224,6 +229,10 @@ class ArtifactsTab(QWidget):
         self._artifacts = []  # All discovered artifacts
         self._filtered_artifacts = []  # Currently displayed
         self._tagged_artifacts = set()  # Tagged for reporting
+        
+        # Correlator / process-tree for cross-artifact intelligence
+        self._correlator = ArtifactCorrelator()
+        self._tree_builder = ProcessTreeBuilder()
         
         self._init_ui()
     
@@ -277,17 +286,27 @@ class ArtifactsTab(QWidget):
         self.tree_categories.expandAll()
         layout.addWidget(self.tree_categories)
         
-        # Statistics
-        stats_group = QGroupBox("Statistics")
+        # Statistics (expanded)
+        stats_group = QGroupBox("📊 Statistics")
         stats_layout = QVBoxLayout()
         
         self.lbl_total = QLabel("Total: 0")
         self.lbl_filtered = QLabel("Filtered: 0")
         self.lbl_tagged = QLabel("Tagged: 0")
+        self.lbl_prefetch = QLabel("Prefetch: 0")
+        self.lbl_registry = QLabel("Registry: 0")
+        self.lbl_browser = QLabel("Browser: 0")
+        self.lbl_eventlog = QLabel("Event Logs: 0")
+        self.lbl_filesystem = QLabel("File System: 0")
+        self.lbl_suspicious = QLabel("⚠ Suspicious: 0")
+        self.lbl_suspicious.setStyleSheet("color: #D64550; font-weight: bold;")
         
-        stats_layout.addWidget(self.lbl_total)
-        stats_layout.addWidget(self.lbl_filtered)
-        stats_layout.addWidget(self.lbl_tagged)
+        for w in [
+            self.lbl_total, self.lbl_filtered, self.lbl_tagged,
+            self.lbl_prefetch, self.lbl_registry, self.lbl_browser,
+            self.lbl_eventlog, self.lbl_filesystem, self.lbl_suspicious,
+        ]:
+            stats_layout.addWidget(w)
         
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
@@ -350,37 +369,75 @@ class ArtifactsTab(QWidget):
         return widget
     
     def _create_preview_pane(self) -> QWidget:
-        """Create right preview pane."""
+        """Create right preview pane with artifact intelligence."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        
-        layout.addWidget(QLabel("<b>Artifact Details</b>"))
-        
+
+        layout.addWidget(QLabel("<b>🔬 Artifact Intelligence</b>"))
+
+        # Sub-tabs inside preview: Info | MACB | Related | Lifecycle | Context | Unknown
+        self.preview_tabs = QTabWidget()
+        self.preview_tabs.setTabPosition(QTabWidget.TabPosition.North)
+
+        # -- Artifact Info tab --
         self.txt_preview = QTextEdit()
         self.txt_preview.setReadOnly(True)
         self.txt_preview.setPlaceholderText("Select an artifact to view details...")
-        layout.addWidget(self.txt_preview)
-        
+        self.preview_tabs.addTab(self.txt_preview, "ℹ️ Info")
+
+        # -- MACB / File Activity tab --
+        self.txt_macb = QTextEdit()
+        self.txt_macb.setReadOnly(True)
+        self.txt_macb.setPlaceholderText("MACB file activity will appear here…")
+        self.preview_tabs.addTab(self.txt_macb, "📅 MACB")
+
+        # -- Related Artifacts tab --
+        self.txt_related = QTextEdit()
+        self.txt_related.setReadOnly(True)
+        self.txt_related.setPlaceholderText("Cross-artifact correlations…")
+        self.preview_tabs.addTab(self.txt_related, "🔗 Related")
+
+        # -- File Lifecycle tab --
+        self.txt_lifecycle = QTextEdit()
+        self.txt_lifecycle.setReadOnly(True)
+        self.txt_lifecycle.setPlaceholderText("File lifecycle reconstruction…")
+        self.preview_tabs.addTab(self.txt_lifecycle, "🔄 Lifecycle")
+
+        # -- Event Context tab --
+        self.txt_context = QTextEdit()
+        self.txt_context.setReadOnly(True)
+        self.txt_context.setPlaceholderText("Surrounding events…")
+        self.preview_tabs.addTab(self.txt_context, "🧩 Context")
+
+        # -- Unknown Artifact Analyzer tab --
+        self.txt_unknown = QTextEdit()
+        self.txt_unknown.setReadOnly(True)
+        self.txt_unknown.setPlaceholderText("Unknown artifact analysis…")
+        self.preview_tabs.addTab(self.txt_unknown, "❓ Analyze")
+
+        layout.addWidget(self.preview_tabs, stretch=1)
+
         # Actions
         actions_group = QGroupBox("Actions")
         actions_layout = QVBoxLayout()
-        
+
         btn_extract = QPushButton("📤 Extract to Workspace")
         btn_extract.clicked.connect(self._on_extract_artifact)
         actions_layout.addWidget(btn_extract)
-        
+
         btn_tag = QPushButton("🏷️ Tag for Report")
         btn_tag.clicked.connect(self._on_tag_artifact)
         actions_layout.addWidget(btn_tag)
-        
-        btn_timeline = QPushButton("📊 Show in Timeline")
+
+        btn_timeline = QPushButton("📊 View in Timeline")
+        btn_timeline.setStyleSheet("background-color: #E8A317; color: white; font-weight: bold;")
         btn_timeline.clicked.connect(self._on_show_in_timeline)
         actions_layout.addWidget(btn_timeline)
-        
+
         actions_group.setLayout(actions_layout)
         layout.addWidget(actions_group)
-        
+
         return widget
     
     def _on_run_scan(self):
@@ -426,8 +483,11 @@ class ArtifactsTab(QWidget):
         self._artifacts.append(artifact)
         self._add_artifact_to_table(artifact)
         
+        # Feed correlator
+        self._correlator.add_event(artifact)
+        
         # Update statistics
-        self.lbl_total.setText(f"Total: {len(self._artifacts)}")
+        self._update_statistics()
     
     def _add_artifact_to_table(self, artifact: Dict):
         """Add artifact to table."""
@@ -509,37 +569,131 @@ class ArtifactsTab(QWidget):
         self.lbl_filtered.setText(f"Filtered: {self.table_artifacts.rowCount()}")
     
     def _on_artifact_selected(self):
-        """Handle artifact selection."""
+        """Handle artifact selection — populate all preview sub-tabs."""
         selected_rows = self.table_artifacts.selectedItems()
         if not selected_rows:
             return
-        
+
         row = selected_rows[0].row()
         artifact = self.table_artifacts.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        
-        if artifact:
-            # Display in preview
-            preview_text = f"""
-Artifact Details
-═══════════════
+        if not artifact:
+            return
 
-Type: {artifact['type']}
-Subtype: {artifact.get('subtype', 'N/A')}
-Name: {artifact['name']}
-Path: {artifact['path']}
+        file_path = artifact.get('path', '')
 
-Description: {artifact['description']}
+        # ── 1. Info tab ──
+        ts_str = artifact['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if artifact.get('timestamp') else 'N/A'
+        meta_json = json.dumps(artifact.get('metadata', {}), indent=2)
+        pid_info = ""
+        if artifact.get('metadata', {}).get('pid'):
+            pid_info = (f"\n\nProcess Information\n───────────────────\n"
+                        f"PID: {artifact['metadata']['pid']}\n"
+                        f"Parent PID: {artifact['metadata'].get('ppid', 'N/A')}\n"
+                        f"User: {artifact['metadata'].get('user', 'N/A')}")
+        info_text = (
+            f"Artifact Information\n"
+            f"════════════════════\n\n"
+            f"Type:        {artifact['type']}\n"
+            f"Subtype:     {artifact.get('subtype', 'N/A')}\n"
+            f"Name:        {artifact['name']}\n"
+            f"Path:        {file_path}\n"
+            f"Description: {artifact['description']}\n\n"
+            f"Timestamp:   {ts_str}\n"
+            f"Evidence ID: {artifact['evidence_id']}\n"
+            f"Hash:        {artifact['hash']}\n"
+            f"\nMetadata:\n{meta_json}"
+            f"{pid_info}"
+        )
+        self.txt_preview.setPlainText(info_text)
 
-Timestamp: {artifact['timestamp'].strftime("%Y-%m-%d %H:%M:%S") if artifact['timestamp'] else 'N/A'}
-Evidence ID: {artifact['evidence_id']}
-Hash: {artifact['hash']}
+        # ── 2. MACB tab ──
+        macb = self._correlator.get_macb(file_path)
+        macb_lines = ["MACB File Activity", "══════════════════", ""]
+        for label, val in macb.to_dict().items():
+            status = val if val else "—"
+            macb_lines.append(f"{label:10s}  {status}")
+        self.txt_macb.setPlainText("\n".join(macb_lines))
 
-Metadata:
-{json.dumps(artifact.get('metadata', {}), indent=2)}
-"""
-            self.txt_preview.setPlainText(preview_text)
-            
-            self.artifact_selected.emit(artifact)
+        # ── 3. Related Artifacts tab ──
+        related = self._correlator.get_related_artifacts(file_path)
+        if related:
+            rel_lines = ["Related Artifacts", "═════════════════", ""]
+            for r in related:
+                rel_lines.append(f"📌 {r.source}")
+                rel_lines.append(f"   {r.description}")
+                if r.timestamp:
+                    rel_lines.append(f"   Timestamp: {r.timestamp}")
+                rel_lines.append("")
+            self.txt_related.setPlainText("\n".join(rel_lines))
+        else:
+            self.txt_related.setPlainText("No related artifacts found for this file.")
+
+        # ── 4. File Lifecycle tab ──
+        lifecycle = self._correlator.build_file_lifecycle(file_path)
+        if lifecycle:
+            lc_lines = ["File Lifecycle", "══════════════", ""]
+            for step in lifecycle:
+                prog = f" [{step.program}]" if step.program else ""
+                pid_s = f" PID {step.pid}" if step.pid else ""
+                lc_lines.append(f"{step.timestamp}  {step.operation}{prog}{pid_s}  ({step.source})")
+            self.txt_lifecycle.setPlainText("\n".join(lc_lines))
+        else:
+            self.txt_lifecycle.setPlainText("No lifecycle events found for this file.")
+
+        # ── 5. Event Context tab ──
+        context_events = self._get_surrounding_events(file_path)
+        if context_events:
+            ctx_lines = ["Event Context (surrounding events)", "══════════════════════════════════", ""]
+            for ce in context_events:
+                ctx_lines.append(
+                    f"{ce.get('ts_utc', ce.get('timestamp', ''))}  "
+                    f"{ce.get('operation', ce.get('event_type', ''))}  "
+                    f"{ce.get('exe_name', ce.get('program', ''))}  "
+                    f"{ce.get('filepath', ce.get('path', ''))}"
+                )
+            self.txt_context.setPlainText("\n".join(ctx_lines))
+        else:
+            self.txt_context.setPlainText("No surrounding context events available.")
+
+        # ── 6. Unknown Artifact Analyzer tab ──
+        header_bytes = artifact.get('metadata', {}).get('header_bytes', b'')
+        file_size = artifact.get('metadata', {}).get('size', 0)
+        result = analyze_unknown_artifact(file_path, file_size=file_size, header_bytes=header_bytes)
+        ua_lines = [
+            "Unknown Artifact Analysis", "═════════════════════════", "",
+            f"Likely Type:       {result.likely_type}",
+            f"Entropy:           {result.entropy:.4f}",
+            f"Suspicious Score:  {result.suspicious_score:.2f}",
+        ]
+        if result.notes:
+            ua_lines.append(f"\nNotes: {result.notes}")
+        self.txt_unknown.setPlainText("\n".join(ua_lines))
+
+        self.artifact_selected.emit(artifact)
+
+    # ---- helpers for preview -------------------------------------------------
+
+    def _get_surrounding_events(self, file_path: str, window: int = 5) -> List[Dict]:
+        """Return events close in time to the given file across all sources."""
+        fp = file_path.lower()
+        fname = fp.rsplit('\\', 1)[-1] if '\\' in fp else fp.rsplit('/', 1)[-1]
+        # Find matching event timestamps
+        matching = []
+        all_events = self._correlator._events if self._correlator._events else []
+        for i, ev in enumerate(all_events):
+            ev_path = (ev.get('filepath') or ev.get('artifact_path') or ev.get('path') or '').lower()
+            ev_desc = (ev.get('description') or '').lower()
+            if fname in ev_path or fname in ev_desc:
+                matching.append(i)
+        if not matching:
+            return []
+        # Gather surrounding events
+        indices = set()
+        for idx in matching:
+            for j in range(max(0, idx - window), min(len(all_events), idx + window + 1)):
+                indices.add(j)
+        result = [all_events[i] for i in sorted(indices)]
+        return result[:50]  # cap
     
     def _on_extract_artifact(self):
         """Extract artifact to workspace."""
@@ -576,8 +730,31 @@ Metadata:
             QMessageBox.information(self, "Tagged", f"Artifact tagged for reporting:\n{artifact['name']}")
     
     def _on_show_in_timeline(self):
-        """Show artifact in timeline."""
-        QMessageBox.information(self, "Timeline", "Show in timeline (opens Timeline tab)")
+        """Jump to Timeline tab filtered for the selected artifact."""
+        selected_rows = self.table_artifacts.selectedItems()
+        if not selected_rows:
+            QMessageBox.information(self, "Timeline", "Select an artifact first.")
+            return
+        row = selected_rows[0].row()
+        artifact = self.table_artifacts.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if artifact:
+            file_path = artifact.get('path', artifact.get('name', ''))
+            self.jump_to_timeline.emit(file_path)
+            # Also try to switch to Timeline tab in main window
+            main_window = self.window()
+            if hasattr(main_window, 'tabs'):
+                for i in range(main_window.tabs.count()):
+                    if 'Timeline' in main_window.tabs.tabText(i):
+                        main_window.tabs.setCurrentIndex(i)
+                        # If timeline tab has a keyword filter, set it
+                        if hasattr(main_window, 'timeline_tab'):
+                            tt = main_window.timeline_tab
+                            fname = file_path.rsplit('\\', 1)[-1] if '\\' in file_path else file_path
+                            if hasattr(tt, 'keyword_input'):
+                                tt.keyword_input.setText(fname)
+                            if hasattr(tt, '_apply_filters'):
+                                tt._apply_filters()
+                        break
     
     def set_case(self, case_info: Dict):
         """Set current case."""
@@ -586,3 +763,43 @@ Metadata:
     def get_tagged_artifacts(self) -> List[str]:
         """Get list of tagged artifact paths."""
         return list(self._tagged_artifacts)
+
+    def load_events_for_correlation(self, events_df):
+        """Load normalised events into the correlator for cross-referencing."""
+        import pandas as pd
+        if events_df is not None and not events_df.empty:
+            self._correlator.load_events(events_df)
+            self._tree_builder.load_events(events_df)
+
+    def _update_statistics(self):
+        """Refresh the expanded statistics panel."""
+        total = len(self._artifacts)
+        self.lbl_total.setText(f"Total: {total}")
+        self.lbl_filtered.setText(f"Filtered: {self.table_artifacts.rowCount()}")
+        self.lbl_tagged.setText(f"Tagged: {len(self._tagged_artifacts)}")
+
+        cats = {'Prefetch': 0, 'Registry': 0, 'Browser': 0, 'Event Log': 0, 'File System': 0, 'suspicious': 0}
+        for a in self._artifacts:
+            atype = (a.get('type', '') + ' ' + a.get('subtype', '')).lower()
+            if 'prefetch' in atype:
+                cats['Prefetch'] += 1
+            if 'registry' in atype:
+                cats['Registry'] += 1
+            if 'browser' in atype or 'history' in atype or 'download' in atype:
+                cats['Browser'] += 1
+            if 'event' in atype or 'evtx' in atype:
+                cats['Event Log'] += 1
+            if 'mft' in atype or 'usn' in atype or 'file' in atype:
+                cats['File System'] += 1
+            # Simple suspicious heuristic
+            path_low = a.get('path', '').lower()
+            if any(s in path_low for s in ['\\temp\\', '\\tmp\\', 'appdata\\local\\temp']):
+                cats['suspicious'] += 1
+
+        self.lbl_prefetch.setText(f"Prefetch: {cats['Prefetch']}")
+        self.lbl_registry.setText(f"Registry: {cats['Registry']}")
+        self.lbl_browser.setText(f"Browser: {cats['Browser']}")
+        self.lbl_eventlog.setText(f"Event Logs: {cats['Event Log']}")
+        self.lbl_filesystem.setText(f"File System: {cats['File System']}")
+        self.lbl_suspicious.setText(f"⚠ Suspicious: {cats['suspicious']}")
+
