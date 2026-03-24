@@ -118,7 +118,7 @@ VIZ_PRESETS: Dict[str, Dict[str, Any]] = {
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QGroupBox, QComboBox, QSpinBox,
+    QLabel, QGroupBox, QComboBox, QSpinBox, QGridLayout,
     QCheckBox, QFileDialog, QTabWidget, QScrollArea,
     QSplitter
 )
@@ -662,6 +662,7 @@ class VisualizationsTab(QWidget):
         """Initialize UI components with loading indicators and presets."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         
         # Header with title and status
         header_layout = QHBoxLayout()
@@ -696,6 +697,7 @@ class VisualizationsTab(QWidget):
         
         # Sub-tabs for different visualizations
         self.sub_tabs = QTabWidget()
+        self.sub_tabs.setDocumentMode(True)
         self.sub_tabs.addTab(self._create_heatmap_tab(), "🔥 Heatmap")
         self.sub_tabs.addTab(self._create_connections_tab(), "🕸️ Connections")
         self.sub_tabs.addTab(self._create_timeline_tab(), "📊 Timeline Graph")
@@ -705,11 +707,27 @@ class VisualizationsTab(QWidget):
         self.sub_tabs.addTab(self._create_user_activity_tab(), "👤 User Activity")
         
         layout.addWidget(self.sub_tabs)
+
+    def _style_controls_group(self, group: QGroupBox) -> None:
+        """Apply consistent spacing and visual styling for control sections."""
+        group.setStyleSheet(
+            "QGroupBox { font-weight: 600; margin-top: 8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
+        )
+
+    def _style_primary_button(self, button: QPushButton, color: str) -> None:
+        """Apply shared button styling."""
+        button.setMinimumHeight(34)
+        button.setStyleSheet(
+            f"background-color: {color}; color: white; font-weight: bold; "
+            "border-radius: 4px; padding: 6px 10px;"
+        )
     
     def _create_heatmap_tab(self) -> QWidget:
         """Create Heatmap visualization tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
         
         # Info
         info_label = QLabel(
@@ -719,17 +737,20 @@ class VisualizationsTab(QWidget):
         
         # Controls
         controls_group = QGroupBox("Heatmap Controls")
-        controls_layout = QHBoxLayout(controls_group)
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(8)
+        self._style_controls_group(controls_group)
         
         # Add heatmap type selector
-        controls_layout.addWidget(QLabel("Heatmap Type:"))
+        controls_layout.addWidget(QLabel("Heatmap Type:"), 0, 0)
         self.heatmap_type_combo = QComboBox()
         self.heatmap_type_combo.addItems(["Day/Hour", "Calendar View"])
         self.heatmap_type_combo.setCurrentText("Calendar View")
         self.heatmap_type_combo.currentTextChanged.connect(self._on_heatmap_type_changed)
-        controls_layout.addWidget(self.heatmap_type_combo)
+        controls_layout.addWidget(self.heatmap_type_combo, 0, 1)
         
-        controls_layout.addWidget(QLabel("Time Bin:"))
+        controls_layout.addWidget(QLabel("Time Bin:"), 0, 2)
         self.heatmap_bin_combo = QComboBox()
         self.heatmap_bin_combo.addItems([
             "Entire Timeline",
@@ -738,9 +759,9 @@ class VisualizationsTab(QWidget):
             "1 Day", "1 Week", "1 Month", "3 Months", "6 Months", "1 Year"
         ])
         self.heatmap_bin_combo.setCurrentText("1 Hour")
-        controls_layout.addWidget(self.heatmap_bin_combo)
+        controls_layout.addWidget(self.heatmap_bin_combo, 0, 3)
         
-        controls_layout.addWidget(QLabel("Category Filter:"))
+        controls_layout.addWidget(QLabel("Category Filter:"), 1, 0)
         self.heatmap_category_combo = QComboBox()
         self.heatmap_category_combo.addItems([
             "All Categories",
@@ -753,24 +774,20 @@ class VisualizationsTab(QWidget):
             "Email/Messages",
             "System Events"
         ])
-        controls_layout.addWidget(self.heatmap_category_combo)
+        controls_layout.addWidget(self.heatmap_category_combo, 1, 1, 1, 3)
         
         btn_generate = QPushButton("📊 Generate Heatmap")
         btn_generate.clicked.connect(lambda: self._generate_viz("heatmap"))
-        btn_generate.setMinimumHeight(35)
-        btn_generate.setStyleSheet(
-            "background-color: #1976d2; color: white; font-weight: bold; "
-            "border-radius: 4px; padding: 8px;"
-        )
-        controls_layout.addWidget(btn_generate)
+        self._style_primary_button(btn_generate, COLOR_INFO)
+        controls_layout.addWidget(btn_generate, 2, 0)
         
         btn_save = QPushButton("💾 Save")
         btn_save.clicked.connect(self._save_heatmap)
-        controls_layout.addWidget(btn_save)
+        controls_layout.addWidget(btn_save, 2, 1)
         
         btn_export_data = QPushButton("📤 Export Data")
         btn_export_data.clicked.connect(lambda: self._export_viz_data("heatmap"))
-        controls_layout.addWidget(btn_export_data)
+        controls_layout.addWidget(btn_export_data, 2, 2)
         
         layout.addWidget(controls_group)
         
@@ -784,6 +801,7 @@ class VisualizationsTab(QWidget):
         """Create Connections Graph tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
         
         # Info
         info_label = QLabel(
@@ -793,9 +811,12 @@ class VisualizationsTab(QWidget):
         
         # Controls
         controls_group = QGroupBox("Graph Controls")
-        controls_layout = QHBoxLayout(controls_group)
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(8)
+        self._style_controls_group(controls_group)
         
-        controls_layout.addWidget(QLabel("Time Range:"))
+        controls_layout.addWidget(QLabel("Time Range:"), 0, 0)
         self.graph_time_combo = QComboBox()
         self.graph_time_combo.addItems([
             "Entire Timeline",
@@ -804,35 +825,31 @@ class VisualizationsTab(QWidget):
             "Last 3 Months", "Last 6 Months", "Last Year"
         ])
         self.graph_time_combo.setCurrentText("Entire Timeline")
-        controls_layout.addWidget(self.graph_time_combo)
+        controls_layout.addWidget(self.graph_time_combo, 0, 1)
         
-        controls_layout.addWidget(QLabel("Layout:"))
+        controls_layout.addWidget(QLabel("Layout:"), 0, 2)
         self.graph_layout_combo = QComboBox()
         self.graph_layout_combo.addItems([
             "force_directed", "circular", "hierarchical", "radial", "spring"
         ])
-        controls_layout.addWidget(self.graph_layout_combo)
+        controls_layout.addWidget(self.graph_layout_combo, 0, 3)
         
         self.graph_labels_check = QCheckBox("Show Labels")
         self.graph_labels_check.setChecked(True)
-        controls_layout.addWidget(self.graph_labels_check)
+        controls_layout.addWidget(self.graph_labels_check, 1, 0)
         
         btn_generate = QPushButton("🕸️ Generate Graph")
         btn_generate.clicked.connect(lambda: self._generate_viz("connections"))
-        btn_generate.setMinimumHeight(35)
-        btn_generate.setStyleSheet(
-            "background-color: #388e3c; color: white; font-weight: bold; "
-            "border-radius: 4px; padding: 8px;"
-        )
-        controls_layout.addWidget(btn_generate)
+        self._style_primary_button(btn_generate, COLOR_LOW)
+        controls_layout.addWidget(btn_generate, 2, 0)
         
         btn_save = QPushButton("💾 Save")
         btn_save.clicked.connect(self._save_connections)
-        controls_layout.addWidget(btn_save)
+        controls_layout.addWidget(btn_save, 2, 1)
         
         btn_export_data = QPushButton("📤 Export Data")
         btn_export_data.clicked.connect(lambda: self._export_viz_data("connections"))
-        controls_layout.addWidget(btn_export_data)
+        controls_layout.addWidget(btn_export_data, 2, 2)
         
         layout.addWidget(controls_group)
         
@@ -846,6 +863,7 @@ class VisualizationsTab(QWidget):
         """Create Timeline Graph tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
         
         # Info
         info_label = QLabel(
@@ -855,9 +873,12 @@ class VisualizationsTab(QWidget):
         
         # Controls
         controls_group = QGroupBox("Timeline Controls")
-        controls_layout = QHBoxLayout(controls_group)
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(8)
+        self._style_controls_group(controls_group)
         
-        controls_layout.addWidget(QLabel("Time Bin:"))
+        controls_layout.addWidget(QLabel("Time Bin:"), 0, 0)
         self.timeline_bin_combo = QComboBox()
         self.timeline_bin_combo.addItems([
             "Entire Timeline",
@@ -866,9 +887,9 @@ class VisualizationsTab(QWidget):
             "1 Day", "1 Week", "2 Weeks", "1 Month", "3 Months", "6 Months", "1 Year"
         ])
         self.timeline_bin_combo.setCurrentText("1 Hour")
-        controls_layout.addWidget(self.timeline_bin_combo)
+        controls_layout.addWidget(self.timeline_bin_combo, 0, 1)
         
-        controls_layout.addWidget(QLabel("View Type:"))
+        controls_layout.addWidget(QLabel("View Type:"), 0, 2)
         self.timeline_view_combo = QComboBox()
         self.timeline_view_combo.addItems([
             "Stacked Area",
@@ -878,28 +899,24 @@ class VisualizationsTab(QWidget):
             "Histogram"
         ])
         self.timeline_view_combo.setCurrentText("Stacked Area")
-        controls_layout.addWidget(self.timeline_view_combo)
+        controls_layout.addWidget(self.timeline_view_combo, 0, 3)
         
         self.timeline_stacked_check = QCheckBox("Show Categories")
         self.timeline_stacked_check.setChecked(True)
-        controls_layout.addWidget(self.timeline_stacked_check)
+        controls_layout.addWidget(self.timeline_stacked_check, 1, 0)
         
         btn_generate = QPushButton("📊 Generate Timeline")
         btn_generate.clicked.connect(lambda: self._generate_viz("timeline"))
-        btn_generate.setMinimumHeight(35)
-        btn_generate.setStyleSheet(
-            "background-color: #f57c00; color: white; font-weight: bold; "
-            "border-radius: 4px; padding: 8px;"
-        )
-        controls_layout.addWidget(btn_generate)
+        self._style_primary_button(btn_generate, COLOR_HIGH)
+        controls_layout.addWidget(btn_generate, 2, 0)
         
         btn_save = QPushButton("💾 Save")
         btn_save.clicked.connect(self._save_timeline)
-        controls_layout.addWidget(btn_save)
+        controls_layout.addWidget(btn_save, 2, 1)
         
         btn_export_data = QPushButton("📤 Export Data")
         btn_export_data.clicked.connect(lambda: self._export_viz_data("timeline"))
-        controls_layout.addWidget(btn_export_data)
+        controls_layout.addWidget(btn_export_data, 2, 2)
         
         layout.addWidget(controls_group)
         
@@ -978,6 +995,7 @@ class VisualizationsTab(QWidget):
         """Create Artifact Distribution visualization tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
         
         # Info
         info_label = QLabel(
@@ -987,9 +1005,12 @@ class VisualizationsTab(QWidget):
         
         # Controls
         controls_group = QGroupBox("Distribution Controls")
-        controls_layout = QHBoxLayout(controls_group)
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(8)
+        self._style_controls_group(controls_group)
         
-        controls_layout.addWidget(QLabel("Time Range:"))
+        controls_layout.addWidget(QLabel("Time Range:"), 0, 0)
         self.artifact_time_combo = QComboBox()
         self.artifact_time_combo.addItems([
             "Entire Timeline",
@@ -998,9 +1019,9 @@ class VisualizationsTab(QWidget):
             "Last 3 Months", "Last 6 Months", "Last Year"
         ])
         self.artifact_time_combo.setCurrentText("Entire Timeline")
-        controls_layout.addWidget(self.artifact_time_combo)
+        controls_layout.addWidget(self.artifact_time_combo, 0, 1)
         
-        controls_layout.addWidget(QLabel("Chart Type:"))
+        controls_layout.addWidget(QLabel("Chart Type:"), 0, 2)
         self.artifact_chart_combo = QComboBox()
         self.artifact_chart_combo.addItems([
             "Pie Chart", 
@@ -1009,19 +1030,19 @@ class VisualizationsTab(QWidget):
             "Tree Map",
             "Sunburst Chart"
         ])
-        controls_layout.addWidget(self.artifact_chart_combo)
+        controls_layout.addWidget(self.artifact_chart_combo, 0, 3)
         
         self.artifact_3d_check = QCheckBox("3D Effect")
-        controls_layout.addWidget(self.artifact_3d_check)
+        controls_layout.addWidget(self.artifact_3d_check, 1, 0)
         
         btn_generate = QPushButton("📁 Generate Chart")
         btn_generate.clicked.connect(lambda: self._generate_artifact_distribution())
-        btn_generate.setMinimumHeight(35)
-        controls_layout.addWidget(btn_generate)
+        self._style_primary_button(btn_generate, COLOR_INFO)
+        controls_layout.addWidget(btn_generate, 2, 0)
         
         btn_save = QPushButton("💾 Save Image")
         btn_save.clicked.connect(self._save_artifact_dist)
-        controls_layout.addWidget(btn_save)
+        controls_layout.addWidget(btn_save, 2, 1)
         
         layout.addWidget(controls_group)
         
@@ -1035,6 +1056,7 @@ class VisualizationsTab(QWidget):
         """Create Severity Analysis visualization tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
         
         # Info
         info_label = QLabel(
@@ -1044,9 +1066,12 @@ class VisualizationsTab(QWidget):
         
         # Controls
         controls_group = QGroupBox("Severity Controls")
-        controls_layout = QHBoxLayout(controls_group)
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(8)
+        self._style_controls_group(controls_group)
         
-        controls_layout.addWidget(QLabel("Time Bin:"))
+        controls_layout.addWidget(QLabel("Time Bin:"), 0, 0)
         self.severity_bin_combo = QComboBox()
         self.severity_bin_combo.addItems([
             "Entire Timeline",
@@ -1055,9 +1080,9 @@ class VisualizationsTab(QWidget):
             "1 Day", "1 Week", "2 Weeks", "1 Month", "3 Months", "6 Months", "1 Year"
         ])
         self.severity_bin_combo.setCurrentText("1 Day")
-        controls_layout.addWidget(self.severity_bin_combo)
+        controls_layout.addWidget(self.severity_bin_combo, 0, 1)
         
-        controls_layout.addWidget(QLabel("View Type:"))
+        controls_layout.addWidget(QLabel("View Type:"), 0, 2)
         self.severity_view_combo = QComboBox()
         self.severity_view_combo.addItems([
             "Stacked Area", 
@@ -1066,16 +1091,16 @@ class VisualizationsTab(QWidget):
             "Heatmap",
             "Radar Chart"
         ])
-        controls_layout.addWidget(self.severity_view_combo)
+        controls_layout.addWidget(self.severity_view_combo, 0, 3)
         
         btn_generate = QPushButton("⚠️ Generate Analysis")
         btn_generate.clicked.connect(lambda: self._generate_severity_analysis())
-        btn_generate.setMinimumHeight(35)
-        controls_layout.addWidget(btn_generate)
+        self._style_primary_button(btn_generate, COLOR_HIGH)
+        controls_layout.addWidget(btn_generate, 2, 0)
         
         btn_save = QPushButton("💾 Save Image")
         btn_save.clicked.connect(self._save_severity)
-        controls_layout.addWidget(btn_save)
+        controls_layout.addWidget(btn_save, 2, 1)
         
         layout.addWidget(controls_group)
         
@@ -1089,6 +1114,7 @@ class VisualizationsTab(QWidget):
         """Create User Activity visualization tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
         
         # Info
         info_label = QLabel(
@@ -1098,24 +1124,27 @@ class VisualizationsTab(QWidget):
         
         # Controls
         controls_group = QGroupBox("User Activity Controls")
-        controls_layout = QHBoxLayout(controls_group)
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(8)
+        self._style_controls_group(controls_group)
         
-        controls_layout.addWidget(QLabel("Metric:"))
+        controls_layout.addWidget(QLabel("Metric:"), 0, 0)
         self.user_metric_combo = QComboBox()
         self.user_metric_combo.addItems([
             "Event Count", "File Modifications", "Process Executions",
             "Network Connections", "Registry Changes"
         ])
-        controls_layout.addWidget(self.user_metric_combo)
+        controls_layout.addWidget(self.user_metric_combo, 0, 1)
         
         btn_generate = QPushButton("👤 Generate Activity Map")
         btn_generate.clicked.connect(lambda: self._generate_user_activity())
-        btn_generate.setMinimumHeight(35)
-        controls_layout.addWidget(btn_generate)
+        self._style_primary_button(btn_generate, COLOR_LOW)
+        controls_layout.addWidget(btn_generate, 2, 0)
         
         btn_save = QPushButton("💾 Save Image")
         btn_save.clicked.connect(self._save_user_activity)
-        controls_layout.addWidget(btn_save)
+        controls_layout.addWidget(btn_save, 2, 1)
         
         layout.addWidget(controls_group)
         

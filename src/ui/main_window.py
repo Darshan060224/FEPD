@@ -142,6 +142,13 @@ class MainWindow(QMainWindow):
             from .tabs.case_details_tab import CaseDetailsTab
             self.case_details_tab = CaseDetailsTab(self.case_metadata, self.case_path)
             self.tabs.addTab(self.case_details_tab, "📋 Case Details")
+
+        # Cases tab: always present for create/open workflows.
+        from .tabs.case_tab import CaseTab
+        self.case_tab = CaseTab()
+        self.case_tab.case_created.connect(self._handle_case_tab_changed)
+        self.case_tab.case_loaded.connect(self._handle_case_tab_loaded)
+        self.tabs.addTab(self.case_tab, "🗂️ Cases")
         
         # Tab 1: Image Ingest
         self.ingest_tab = self._create_ingest_tab()
@@ -204,6 +211,70 @@ class MainWindow(QMainWindow):
                 self.configuration_tab = None
         except Exception as exc:
             self.logger.warning("Could not remove legacy Configuration tab: %s", exc)
+
+    def _handle_case_tab_changed(self, case_id: str) -> None:
+        """Handle case creation/open events from Cases tab."""
+        if not case_id:
+            return
+        try:
+            # Prefer in-memory metadata emitted/held by Cases tab.
+            if (
+                hasattr(self, "case_tab")
+                and getattr(self.case_tab, "current_case", None)
+                and self.case_tab.current_case.get("case_id") == case_id
+            ):
+                metadata = dict(self.case_tab.current_case)
+                metadata.setdefault("path", str(Path("cases") / str(case_id)))
+                self._handle_case_tab_loaded(metadata)
+                return
+
+            from ..core.case_manager import CaseManager
+
+            case_mgr = CaseManager(base_cases_dir="cases")
+            case_dir = Path("cases") / str(case_id)
+            if not case_dir.exists():
+                self.logger.warning("Cases tab emitted unknown case id: %s", case_id)
+                return
+            metadata = case_mgr.open_case(str(case_dir))
+            self._handle_case_tab_loaded(metadata)
+        except Exception as exc:
+            self.logger.warning("Failed handling case event from Cases tab: %s", exc)
+
+    def _handle_case_tab_loaded(self, case_metadata: Dict[str, Any]) -> None:
+        """Sync main window context when Cases tab loads a case."""
+        if not isinstance(case_metadata, dict):
+            return
+        try:
+            case_id = case_metadata.get("case_id")
+            case_path_value = case_metadata.get("path")
+            if not case_path_value and case_id:
+                case_path_value = str(Path("cases") / str(case_id))
+                case_metadata["path"] = case_path_value
+
+            if not case_path_value:
+                self.logger.warning("Cases tab load event missing path/case_id")
+                return
+
+            case_path = Path(case_path_value)
+            self.case_metadata = case_metadata
+            self.case_path = str(case_path)
+            self.case_workspace = case_path
+            self.current_case = case_metadata.get("case_id")
+
+            self.setWindowTitle(
+                f"FEPD - Forensic Evidence Parser Dashboard v1.0.0 - {self.current_case or 'Case'}"
+            )
+            self._sync_all_tabs_case_context(case_metadata, case_path)
+            if self.current_case:
+                self._refresh_files_tab(self.current_case)
+            if self.case_workspace:
+                self._refresh_artifacts_tab(self.case_workspace)
+                self._hydrate_tabs_from_unified_store(
+                    self.case_workspace, include_timeline=True, rebuild_index=True
+                )
+            self.statusBar.showMessage(f"Case '{self.current_case}' ready", 4000)
+        except Exception as exc:
+            self.logger.warning("Failed to sync case from Cases tab: %s", exc)
     
     def _create_ingest_tab(self) -> QWidget:
         """Create Image Ingest tab — Enhanced with Evidence Intelligence Dashboard."""

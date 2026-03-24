@@ -405,6 +405,7 @@ class CaseTab(QWidget):
             self._init_case_database(case_path)
             
             # Load the case
+            metadata["path"] = str(case_path)
             self.current_case = metadata
             self._update_case_display()
             self._load_coc_log()
@@ -615,6 +616,7 @@ class CaseTab(QWidget):
                         details={"case_id": metadata['case_id']}
                     )
             
+            metadata["path"] = str(case_path)
             self.current_case = metadata
             self._update_case_display()
             self._load_coc_log()
