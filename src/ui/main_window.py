@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 import pandas as pd
 from PyQt6.QtWidgets import (
@@ -30,6 +30,13 @@ from ..modules.pipeline import FEPDPipeline
 from ..utils.report_generator import ReportGenerator
 from ..utils.session_manager import SessionManager
 from ..utils.i18n.translator import Translator
+from src.services.unified_forensic_store import UnifiedForensicStore
+from src.services.forensic_tab_engine import (
+    ForensicTabExtractionEngine,
+    TAB_FIELDS,
+    route_to_tab,
+    validate_or_coerce_response,
+)
 import threading
 
 
@@ -76,6 +83,10 @@ class MainWindow(QMainWindow):
         self.case_metadata = None
         self.case_path = None
         self.image_path = None
+        self.dynamic_insights_tabs = None
+        self._dynamic_renderer = None
+        self._last_forensic_hydration_at: Optional[datetime] = None
+        self._active_ingest_source_type: Optional[str] = None
         
         # Case cache for quick reopening (enterprise feature)
         self._case_cache = {}  # {case_id: {'data': df, 'timestamp': datetime, 'artifacts': list}}
@@ -100,7 +111,7 @@ class MainWindow(QMainWindow):
         # Set window title with case ID if available
         window_title = "FEPD - Forensic Evidence Parser Dashboard v1.0.0"
         if self.case_metadata:
-            case_id = self.case_metadata.get('case_id', 'Unknown')
+            case_id = self.case_metadata.get('case_id', 'N/A')
             window_title += f" - {case_id}"
         
         self.setWindowTitle(window_title)
@@ -141,16 +152,11 @@ class MainWindow(QMainWindow):
         if self.files_tab:
             self.tabs.addTab(self.files_tab, "🗂️ Files")
         
-        # Tab 3: Configuration (Host Profile)
-        from .tabs.configuration_tab import ConfigurationTab
-        self.configuration_tab = ConfigurationTab()
-        self.tabs.addTab(self.configuration_tab, "⚙ Configuration")
-        
-        # Tab 4: Artifacts
+        # Tab 4: Artifacts (Enhanced — Real artifact categories)
         self.artifacts_tab = self._create_artifacts_tab()
         self.tabs.addTab(self.artifacts_tab, "🔍 Artifacts")
         
-        # Tab 3: Timeline
+        # Tab 5: Timeline (Enhanced — Event intelligence)
         self.timeline_tab = self._create_timeline_tab()
         self.tabs.addTab(self.timeline_tab, "📊 Timeline")
         
@@ -163,30 +169,11 @@ class MainWindow(QMainWindow):
         from .tabs.visualizations_tab import VisualizationsTab
         self.visualizations_tab = VisualizationsTab()
         self.tabs.addTab(self.visualizations_tab, "📈 Visualizations")
+
+        # Terminal tab intentionally removed per UX request.
+        self.fepd_terminal = None
         
-        # Tab 6: FEPD Terminal (Forensic OS)
-        try:
-            from src.ui.widgets.fepd_terminal_widget import FEPDTerminalWidget
-            self.fepd_terminal = FEPDTerminalWidget()
-        except ImportError:
-            import importlib.util
-            import os
-            terminal_widget_path = os.path.join(os.path.dirname(__file__), '..', '..', 'ui', 'fepd_terminal_widget.py')
-            spec = importlib.util.spec_from_file_location("fepd_terminal_widget", terminal_widget_path)
-            fepd_terminal_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fepd_terminal_module)
-            self.fepd_terminal = fepd_terminal_module.FEPDTerminalWidget()
-        self.tabs.addTab(self.fepd_terminal, "🖥️ FEPD Terminal")
-        
-        # Connect Files Tab ↔ Terminal bidirectional sync
-        self._setup_files_terminal_sync()
-        
-        # Tab 7: Platform Analysis (NEW)
-        from .tabs.platform_analysis_tab import PlatformAnalysisTab
-        self.platform_analysis_tab = PlatformAnalysisTab()
-        self.tabs.addTab(self.platform_analysis_tab, "🖥️ Platforms")
-        
-        # Tab 8: Report
+        # Tab 7: Report
         self.report_tab = self._create_report_tab()
         self.tabs.addTab(self.report_tab, "📄 Report")
         
@@ -196,12 +183,50 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.chatbot_tab, "💬 Chatbot")
         
         layout.addWidget(self.tabs)
+
+        # Defensive cleanup: remove legacy Configuration tab if any path injected it.
+        self._remove_legacy_configuration_tab()
         
         # Connect tab change signal
         self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _remove_legacy_configuration_tab(self) -> None:
+        """Remove legacy Configuration tab from UI if present."""
+        try:
+            for idx in range(self.tabs.count() - 1, -1, -1):
+                label = self.tabs.tabText(idx).lower()
+                if "configuration" in label:
+                    widget = self.tabs.widget(idx)
+                    self.tabs.removeTab(idx)
+                    if widget is not None:
+                        widget.deleteLater()
+            if hasattr(self, 'configuration_tab'):
+                self.configuration_tab = None
+        except Exception as exc:
+            self.logger.warning("Could not remove legacy Configuration tab: %s", exc)
     
     def _create_ingest_tab(self) -> QWidget:
-        """Create Image Ingest tab."""
+        """Create Image Ingest tab — Enhanced with Evidence Intelligence Dashboard."""
+        try:
+            from .tabs.image_ingest_tab import ImageIngestTab
+            from ..core.case_manager import CaseManager
+
+            case_mgr = CaseManager(base_cases_dir=str(
+                Path(self.case_path).parent if self.case_path else "cases"
+            ))
+            if self.case_metadata and self.case_path:
+                case_mgr.current_case = self.case_metadata
+                case_mgr.case_path = Path(self.case_path)
+
+            tab = ImageIngestTab(case_manager=case_mgr)
+            self._enhanced_ingest_tab = tab
+            self.logger.info("Enhanced Image Ingest tab loaded (Evidence Intelligence)")
+            return tab
+        except Exception as exc:
+            self.logger.warning("Enhanced Ingest tab unavailable, using fallback: %s", exc)
+            import traceback; traceback.print_exc()
+
+        # ── Fallback: minimal placeholder ──
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
@@ -213,7 +238,7 @@ class MainWindow(QMainWindow):
             "Create or Open a case first to enable image ingestion.\n\n"
             "Supported formats:\n"
             "• Disk Images: E01, DD, RAW, IMG, VMDK, VHD, QCOW2, AFF\n"
-            "• Memory Dumps: MEM, DMP, VMEM, Hibernation\n"
+            "• Memory Dumps: MEM, DMP, VMEM, MDDRAMIMAGE, Hibernation\n"
             "• Mobile: Android Backup, iOS, UFED\n"
             "• Archives: ZIP, 7Z, TAR\n"
             "• Network: PCAP, PCAPNG\n"
@@ -337,10 +362,20 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'chain_of_custody') and self.chain_of_custody:
                     self.chain_of_custody.log_action(action, details)
             
-            # Create read file function (placeholder - will be connected to image handler)
+            # Create read file function that reads from physical paths stored in VFS metadata
             def read_file_func(path: str, offset: int, length: int) -> Optional[bytes]:
-                # TODO: Connect to actual image handler for reading file bytes
-                # For now, return None (will show error in viewers)
+                try:
+                    # Look up the VFS node to find the physical file path
+                    node = self.vfs.get_node(path) if self.vfs else None
+                    physical_path = None
+                    if node and node.metadata:
+                        physical_path = node.metadata.get('physical_path')
+                    if physical_path and Path(physical_path).exists():
+                        with open(physical_path, 'rb') as f:
+                            f.seek(offset)
+                            return f.read(length)
+                except Exception:
+                    pass
                 return None
             
             # Create Files tab
@@ -663,6 +698,399 @@ class MainWindow(QMainWindow):
         """Ensure all parent directories exist in VFS."""
         pass  # Handled in _populate_vfs_from_files_db now
     
+    def _auto_load_configuration_hives(self, case_path: Path):
+        """
+        Auto-detect and load registry hives into Configuration tab.
+        
+        Searches the case's artifacts/registry and extracted_data directories
+        for SYSTEM and SOFTWARE hive files.
+        """
+        try:
+            if not hasattr(self, 'configuration_tab') or not self.configuration_tab:
+                return
+
+            system_hive = None
+            software_hive = None
+
+            # Search paths where hives might be extracted
+            search_dirs = [
+                Path(case_path) / "artifacts" / "registry",
+                Path(case_path) / "extracted_data",
+            ]
+
+            # Also search recursively in extracted_data partitions
+            extracted_dir = Path(case_path) / "extracted_data"
+            if extracted_dir.exists():
+                for p_dir in extracted_dir.rglob("*"):
+                    if p_dir.is_dir() and p_dir.name.lower() in ('config', 'system32', 'system32/config'):
+                        search_dirs.append(p_dir)
+                # Also add partition subdirectories
+                for part_dir in extracted_dir.iterdir():
+                    if part_dir.is_dir():
+                        config_dir = part_dir / "Windows" / "System32" / "config"
+                        if config_dir.exists():
+                            search_dirs.append(config_dir)
+
+            for search_dir in search_dirs:
+                if not search_dir.exists():
+                    continue
+                for f in search_dir.iterdir():
+                    if not f.is_file():
+                        continue
+                    name_lower = f.name.lower()
+                    if name_lower == 'system' or name_lower.startswith('system.') and 'log' not in name_lower:
+                        if not system_hive:
+                            system_hive = f
+                    elif name_lower == 'software' or name_lower.startswith('software.') and 'log' not in name_lower:
+                        if not software_hive:
+                            software_hive = f
+
+            if system_hive or software_hive:
+                self.configuration_tab.load_hives(
+                    system_hive=system_hive,
+                    software_hive=software_hive
+                )
+                self.logger.info(f"Auto-loaded configuration hives: SYSTEM={system_hive}, SOFTWARE={software_hive}")
+            else:
+                self.logger.info("No registry hives found for auto-loading into Configuration tab")
+        except Exception as e:
+            self.logger.warning(f"Could not auto-load configuration hives: {e}")
+
+    def _refresh_artifacts_tab(self, case_path: Path):
+        """
+        Refresh the enhanced Artifacts tab with artifacts from the case workspace.
+        
+        Scans the case artifacts directory and feeds found artifacts into the
+        enhanced ArtifactsTab via its _on_artifact_found method.
+        """
+        try:
+            enhanced_tab = getattr(self, '_enhanced_artifacts_tab', None)
+            if not enhanced_tab:
+                return
+
+            case_info = {
+                'case_id': self.current_case,
+                'path': str(case_path),
+            }
+            if hasattr(enhanced_tab, 'set_case'):
+                enhanced_tab.set_case(case_info)
+                return
+
+            artifacts_dir = Path(case_path) / "artifacts"
+            if not artifacts_dir.exists():
+                return
+
+            from datetime import datetime
+
+            artifact_type_map = {
+                'registry': 'Registry',
+                'evtx': 'Event Log',
+                'prefetch': 'Prefetch',
+                'mft': 'File System',
+                'browser': 'Browser',
+                'lnk': 'Link File',
+                'linux_config': 'Linux Config',
+                'linux_log': 'Linux Log',
+                'script': 'Script',
+                'binary': 'Binary',
+                'other': 'Other',
+            }
+
+            count = 0
+            for type_dir in artifacts_dir.iterdir():
+                if not type_dir.is_dir():
+                    continue
+
+                atype = artifact_type_map.get(type_dir.name, type_dir.name.replace('_', ' ').title())
+
+                for artifact_file in type_dir.iterdir():
+                    if not artifact_file.is_file():
+                        continue
+
+                    try:
+                        stat_info = artifact_file.stat()
+                        modified_dt = datetime.fromtimestamp(stat_info.st_mtime)
+                        file_size = stat_info.st_size
+                    except Exception:
+                        modified_dt = None
+                        file_size = 0
+
+                    artifact_dict = {
+                        'type': atype,
+                        'subtype': type_dir.name,
+                        'name': artifact_file.name,
+                        'path': str(artifact_file),
+                        'description': f'{atype} artifact: {artifact_file.name}',
+                        'timestamp': modified_dt,
+                        'evidence_id': self.current_case or 'evidence',
+                        'hash': '',
+                        'metadata': {
+                            'size': file_size,
+                            'physical_path': str(artifact_file.absolute())
+                        }
+                    }
+                    enhanced_tab._on_artifact_found(artifact_dict)
+                    count += 1
+
+            if count > 0:
+                self.logger.info(f"Loaded {count} artifacts into enhanced Artifacts tab")
+        except Exception as e:
+            self.logger.warning(f"Could not refresh enhanced Artifacts tab: {e}")
+
+    def _clear_dynamic_insights_tabs(self):
+        """Remove previously rendered dynamic sections before fresh hydration."""
+        tabs = getattr(self, 'dynamic_insights_tabs', None)
+        if tabs is None:
+            return
+        while tabs.count() > 0:
+            widget = tabs.widget(0)
+            tabs.removeTab(0)
+            if widget is not None:
+                widget.deleteLater()
+
+    def _timeline_df_from_section_events(self, events: List[Dict[str, Any]]) -> pd.DataFrame:
+        """Convert routed timeline section events into Timeline/ML-compatible dataframe."""
+        normalized = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+
+            ts = ev.get('time') or ev.get('timestamp') or ""
+            src = str(ev.get('event_type') or ev.get('operation') or 'artifact').upper()
+            activity = str(ev.get('activity') or ev.get('event_type') or 'event')
+            path = str(ev.get('path') or '')
+
+            normalized.append({
+                'ts_utc': ts,
+                'ts_local': ts,
+                'artifact_source': src,
+                'event_type': activity,
+                'description': f"{activity} | {path}" if path else activity,
+                'rule_class': 'NORMAL',
+                'severity': 2,
+                'user_account': str(ev.get('user') or ''),
+                'operation': str(ev.get('operation') or activity),
+                'pid': int(ev.get('pid') or 0),
+                'ppid': int(ev.get('ppid') or 0),
+                'exe_name': str(ev.get('program') or ''),
+                'filepath': path,
+            })
+
+        if not normalized:
+            return pd.DataFrame()
+
+        return pd.DataFrame(normalized)
+
+    def _handle_timeline_section(self, fields: Dict[str, Any]) -> None:
+        """Route activity timeline section into timeline/ML/visualization tabs."""
+        events = fields.get('events', []) if isinstance(fields, dict) else []
+        if not isinstance(events, list):
+            events = []
+        df = self._timeline_df_from_section_events(events)
+        if df.empty:
+            return
+
+        if hasattr(self, 'timeline_tab') and hasattr(self.timeline_tab, 'load_events'):
+            self.timeline_tab.load_events(df)
+        elif hasattr(self, 'timeline_table'):
+            self._populate_timeline_table(df)
+
+        if hasattr(self, 'ml_analytics_tab') and hasattr(self.ml_analytics_tab, 'load_events'):
+            self.ml_analytics_tab.load_events(df, auto_analyze=False)
+
+        if hasattr(self, 'visualizations_tab') and hasattr(self.visualizations_tab, 'load_events'):
+            self.visualizations_tab.load_events(df)
+
+        enhanced_tab = getattr(self, '_enhanced_artifacts_tab', None)
+        if enhanced_tab and hasattr(enhanced_tab, 'load_events_for_correlation'):
+            enhanced_tab.load_events_for_correlation(df)
+
+    def _handle_top_findings_section(self, fields: Dict[str, Any]) -> None:
+        findings = fields.get('findings', []) if isinstance(fields, dict) else []
+        if not isinstance(findings, list):
+            findings = []
+        if hasattr(self, 'ml_analytics_tab') and hasattr(self.ml_analytics_tab, 'apply_top_findings'):
+            self.ml_analytics_tab.apply_top_findings(findings)
+
+    def _handle_threat_intel_section(self, fields: Dict[str, Any]) -> None:
+        indicators = fields.get('indicators', []) if isinstance(fields, dict) else []
+        if not isinstance(indicators, list):
+            indicators = []
+        if hasattr(self, 'ml_analytics_tab') and hasattr(self.ml_analytics_tab, 'apply_threat_indicators'):
+            self.ml_analytics_tab.apply_threat_indicators(indicators)
+
+    def _handle_anomaly_section(self, fields: Dict[str, Any]) -> None:
+        anomalies = fields.get('anomalies', []) if isinstance(fields, dict) else []
+        if not isinstance(anomalies, list):
+            anomalies = []
+        if hasattr(self, 'ml_analytics_tab') and hasattr(self.ml_analytics_tab, 'apply_anomaly_findings'):
+            self.ml_analytics_tab.apply_anomaly_findings(anomalies)
+
+    def _handle_ueba_section(self, fields: Dict[str, Any]) -> None:
+        profiles = fields.get('profiles', []) if isinstance(fields, dict) else []
+        if not isinstance(profiles, list):
+            profiles = []
+        if hasattr(self, 'ml_analytics_tab') and hasattr(self.ml_analytics_tab, 'apply_ueba_profiles'):
+            self.ml_analytics_tab.apply_ueba_profiles(profiles)
+
+    def _handle_network_intrusion_section(self, fields: Dict[str, Any]) -> None:
+        events = fields.get('events', []) if isinstance(fields, dict) else []
+        if not isinstance(events, list):
+            events = []
+        if hasattr(self, 'ml_analytics_tab') and hasattr(self.ml_analytics_tab, 'apply_network_intrusion_events'):
+            self.ml_analytics_tab.apply_network_intrusion_events(events)
+
+    def _handle_config_system_section(self, fields: Dict[str, Any]) -> None:
+        if hasattr(self, 'configuration_tab') and hasattr(self.configuration_tab, 'apply_forensic_section'):
+            self.configuration_tab.apply_forensic_section('System Information', fields)
+
+    def _handle_config_hardware_section(self, fields: Dict[str, Any]) -> None:
+        if hasattr(self, 'configuration_tab') and hasattr(self.configuration_tab, 'apply_forensic_section'):
+            self.configuration_tab.apply_forensic_section('Hardware Information', fields)
+
+    def _handle_config_network_section(self, fields: Dict[str, Any]) -> None:
+        if hasattr(self, 'configuration_tab') and hasattr(self.configuration_tab, 'apply_forensic_section'):
+            self.configuration_tab.apply_forensic_section('Network Configuration', fields)
+
+    def _handle_config_software_section(self, fields: Dict[str, Any]) -> None:
+        if hasattr(self, 'configuration_tab') and hasattr(self.configuration_tab, 'apply_forensic_section'):
+            self.configuration_tab.apply_forensic_section('Installed Software', fields)
+
+    def _handle_config_services_section(self, fields: Dict[str, Any]) -> None:
+        if hasattr(self, 'configuration_tab') and hasattr(self.configuration_tab, 'apply_forensic_section'):
+            self.configuration_tab.apply_forensic_section('Services', fields)
+
+    def _handle_config_security_section(self, fields: Dict[str, Any]) -> None:
+        if hasattr(self, 'configuration_tab') and hasattr(self.configuration_tab, 'apply_forensic_section'):
+            self.configuration_tab.apply_forensic_section('Security Configuration', fields)
+
+    def _sync_files_tab_from_unified_store(self, store: UnifiedForensicStore) -> None:
+        """Populate VFS from ui_files to keep Files tab aligned with normalized backend."""
+        if not hasattr(self, 'vfs') or not self.vfs:
+            return
+
+        from ..core.virtual_fs import VFSNodeType, VFSNode
+
+        rows = store.query_files(limit=200000, offset=0)
+        if not rows:
+            return
+
+        self.vfs.clear_all()
+        nodes_to_add = []
+        parent_paths_added = set()
+
+        for row in rows:
+            raw_path = str(row.get('path') or '').strip()
+            if not raw_path:
+                continue
+
+            physical_path = Path(raw_path)
+            try:
+                rel = physical_path.relative_to(store.case_path)
+                vfs_path = "/Evidence/" + str(rel).replace('\\', '/')
+            except Exception:
+                vfs_path = "/Evidence/" + physical_path.name
+
+            parts = [p for p in vfs_path.split('/') if p]
+            if not parts:
+                continue
+
+            name = parts[-1]
+            parent_path = '/' + '/'.join(parts[:-1]) if len(parts) > 1 else '/'
+
+            for i in range(1, len(parts)):
+                p_path = '/' + '/'.join(parts[:i])
+                if p_path in parent_paths_added:
+                    continue
+                p_parent = '/' + '/'.join(parts[:i - 1]) if i > 1 else '/'
+                p_name = parts[i - 1]
+                nodes_to_add.append(
+                    VFSNode(
+                        id=0,
+                        path=p_path,
+                        name=p_name,
+                        parent_path=p_parent,
+                        node_type=VFSNodeType.FOLDER,
+                        size=0,
+                    )
+                )
+                parent_paths_added.add(p_path)
+
+            nodes_to_add.append(
+                VFSNode(
+                    id=0,
+                    path=vfs_path,
+                    name=name,
+                    parent_path=parent_path,
+                    node_type=VFSNodeType.FILE,
+                    size=int(row.get('size') or 0),
+                    sha256=row.get('sha256') or None,
+                    evidence_id=row.get('source') or 'Filesystem',
+                    metadata={
+                        'owner': row.get('owner') or '',
+                        'physical_path': raw_path,
+                        'extension': row.get('extension') or '',
+                    },
+                )
+            )
+
+        if nodes_to_add:
+            self.vfs.add_nodes_batch(nodes_to_add)
+            if hasattr(self, 'files_tab_widget') and self.files_tab_widget and hasattr(self.files_tab_widget, 'refresh'):
+                self.files_tab_widget.refresh()
+
+    def _hydrate_tabs_from_unified_store(
+        self,
+        case_path: Path,
+        include_timeline: bool = True,
+        rebuild_index: bool = True,
+    ) -> None:
+        """Hydrate tab payloads from normalized store and strict section routing."""
+        try:
+            case_path = Path(case_path)
+            if not case_path.exists():
+                return
+
+            store = UnifiedForensicStore(case_path)
+            stats = store.rebuild_case_index() if rebuild_index else {'files': 0, 'artifacts': 0}
+            engine = ForensicTabExtractionEngine(store)
+
+            self._sync_files_tab_from_unified_store(store)
+
+            handlers = {
+                'Activity Timeline': self._handle_timeline_section,
+                'Top Findings': self._handle_top_findings_section,
+                'Anomaly Detection': self._handle_anomaly_section,
+                'UEBA Profiling': self._handle_ueba_section,
+                'Network Intrusion': self._handle_network_intrusion_section,
+                'Threat Intelligence': self._handle_threat_intel_section,
+                'System Information': self._handle_config_system_section,
+                'Hardware Information': self._handle_config_hardware_section,
+                'Network Configuration': self._handle_config_network_section,
+                'Installed Software': self._handle_config_software_section,
+                'Services': self._handle_config_services_section,
+                'Security Configuration': self._handle_config_security_section,
+            }
+            if not include_timeline:
+                handlers.pop('Activity Timeline', None)
+
+            sections = list(TAB_FIELDS.keys())
+            if not include_timeline:
+                sections = [s for s in sections if s != 'Activity Timeline']
+
+            for section in sections:
+                payload = validate_or_coerce_response(engine.extract_section(section))
+                route_to_tab(payload, handlers)
+
+            self.logger.info(
+                "Hydrated forensic sections for %s (%s files, %s artifacts)",
+                case_path.name,
+                stats.get('files', 0),
+                stats.get('artifacts', 0),
+            )
+        except Exception as exc:
+            self.logger.warning("Unified forensic hydration failed: %s", exc)
+    
     def _setup_files_terminal_sync(self):
         """
         Set up bidirectional sync between Files Tab and FEPD Terminal.
@@ -708,6 +1136,59 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logging.warning(f"Could not set up files-terminal sync: {e}")
+
+    def _sync_ingest_tab_case(self, case_metadata: Dict[str, Any]) -> None:
+        """Bind the active case to Image Ingest tab so persisted evidence repopulates on open."""
+        try:
+            ingest_tab = getattr(self, '_enhanced_ingest_tab', None)
+            if ingest_tab and hasattr(ingest_tab, 'set_case'):
+                sync_payload = dict(case_metadata or {})
+                if not sync_payload.get('path'):
+                    case_path = getattr(self, 'case_path', None) or getattr(self, 'case_workspace', None)
+                    if case_path:
+                        sync_payload['path'] = str(case_path)
+                ingest_tab.set_case(sync_payload)
+        except Exception as exc:
+            self.logger.warning("Could not sync ingest tab to current case: %s", exc)
+
+    def _sync_all_tabs_case_context(self, case_metadata: Dict[str, Any], case_path: Path) -> None:
+        """Push active case context into all user-facing tabs."""
+        try:
+            # Recreate Case Details tab for the active case to avoid stale metadata.
+            if hasattr(self, 'tabs'):
+                for i in range(self.tabs.count() - 1, -1, -1):
+                    if "case details" in self.tabs.tabText(i).lower():
+                        old_widget = self.tabs.widget(i)
+                        self.tabs.removeTab(i)
+                        if old_widget is not None:
+                            old_widget.deleteLater()
+                from .tabs.case_details_tab import CaseDetailsTab
+                self.case_details_tab = CaseDetailsTab(case_metadata, case_path)
+                self.tabs.insertTab(0, self.case_details_tab, "📋 Case Details")
+
+            # Hidden ingest tab still needs case state for backend workflows.
+            ingest_case_payload = dict(case_metadata or {})
+            ingest_case_payload.setdefault('path', str(case_path))
+            self._sync_ingest_tab_case(ingest_case_payload)
+
+            # ML tab context
+            if hasattr(self, 'ml_analytics_tab') and self.ml_analytics_tab:
+                workspace_root = case_path.parent.parent
+                self.ml_analytics_tab.set_case_context(
+                    case_path,
+                    data_source_path=workspace_root / "dataa",
+                    models_dir=workspace_root / "models"
+                )
+
+            # Chatbot context
+            if hasattr(self, 'chatbot_tab') and self.chatbot_tab:
+                self.chatbot_tab.set_case_context(case_path, case_metadata)
+
+            # Report tab context
+            if hasattr(self, 'report_tab') and self.report_tab and hasattr(self.report_tab, 'set_case_context'):
+                self.report_tab.set_case_context(case_path, case_metadata)
+        except Exception as exc:
+            self.logger.warning("Could not sync all tabs case context: %s", exc)
     
     def _on_files_path_changed(self, path: str):
         """Handle path change from Files tab."""
@@ -734,7 +1215,27 @@ class MainWindow(QMainWindow):
             files_tab.sync_from_terminal(path)
     
     def _create_artifacts_tab(self) -> QWidget:
-        """Create Artifacts Discovery tab."""
+        """Create Artifacts Discovery tab — Enhanced with real forensic artifact categories."""
+        try:
+            from .tabs.artifacts_tab_enhanced import ArtifactsTab
+            from ..core.case_manager import CaseManager
+
+            case_mgr = CaseManager(base_cases_dir=str(
+                Path(self.case_path).parent if self.case_path else "cases"
+            ))
+            if self.case_metadata and self.case_path:
+                case_mgr.current_case = self.case_metadata
+                case_mgr.case_path = Path(self.case_path)
+
+            tab = ArtifactsTab(case_manager=case_mgr)
+            self._enhanced_artifacts_tab = tab
+            self.logger.info("Enhanced Artifacts tab loaded (8 categories)")
+            return tab
+        except Exception as exc:
+            self.logger.warning("Enhanced Artifacts tab unavailable, using fallback: %s", exc)
+            import traceback; traceback.print_exc()
+
+        # ── Fallback ──
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
@@ -753,7 +1254,19 @@ class MainWindow(QMainWindow):
         return widget
     
     def _create_timeline_tab(self) -> QWidget:
-        """Create Timeline Visualization tab."""
+        """Create Timeline Visualization tab — Enhanced with event intelligence."""
+        try:
+            from .tabs.timeline_tab import TimelineTab
+
+            tab = TimelineTab()
+            self._enhanced_timeline_tab = tab
+            self.logger.info("Enhanced Timeline tab loaded (event intelligence)")
+            return tab
+        except Exception as exc:
+            self.logger.warning("Enhanced Timeline tab unavailable, using fallback: %s", exc)
+            import traceback; traceback.print_exc()
+
+        # ── Fallback ──
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
@@ -1261,9 +1774,44 @@ class MainWindow(QMainWindow):
             self.statusBar.showMessage("Ready | No case loaded")
     
     def _on_tab_changed(self, index: int):
-        """Handle tab change event - optimized for speed."""
-        # Minimal logging - no heavy operations on tab switch
-        pass
+        """Handle tab change event and refresh forensic views with latest parsed outputs."""
+        try:
+            if not self.case_workspace:
+                return
+
+            tab_widget = self.tabs.widget(index)
+            tab_name = self.tabs.tabText(index).lower() if hasattr(self, 'tabs') else ""
+
+            if "case details" in tab_name and hasattr(self, 'case_details_tab') and self.case_details_tab:
+                if hasattr(self.case_details_tab, 'refresh'):
+                    self.case_details_tab.refresh()
+                return
+
+            if "report" in tab_name and hasattr(self, 'report_tab') and hasattr(self.report_tab, 'set_case_context'):
+                self.report_tab.set_case_context(self.case_workspace, self.case_metadata or {})
+
+            forensic_tab = (
+                "artifacts" in tab_name
+                or "timeline" in tab_name
+                or "ml analytics" in tab_name
+                or "visualizations" in tab_name
+            )
+            if not forensic_tab:
+                return
+
+            # Avoid excessive rebuilds while still reflecting newly parsed evidence quickly.
+            now = datetime.utcnow()
+            if self._last_forensic_hydration_at:
+                elapsed = (now - self._last_forensic_hydration_at).total_seconds()
+                if elapsed < 3:
+                    return
+
+            self._hydrate_tabs_from_unified_store(self.case_workspace, include_timeline=True, rebuild_index=True)
+            self._refresh_artifacts_tab(self.case_workspace)
+            self._last_forensic_hydration_at = now
+            self.statusBar.showMessage("Forensic tabs refreshed from latest parsed evidence", 2500)
+        except Exception as exc:
+            self.logger.warning("Tab-change forensic refresh failed: %s", exc)
     
     def _new_case(self):
         """
@@ -1285,8 +1833,14 @@ class MainWindow(QMainWindow):
             
             if case_metadata:
                 # Update main window state
-                self.case_path = case_metadata.get('case_path')
+                self.case_path = (
+                    case_metadata.get('case_path')
+                    or case_metadata.get('path')
+                    or str(Path('cases') / case_metadata.get('case_id', ''))
+                )
                 self.case_metadata = case_metadata
+                self.case_workspace = Path(self.case_path) if self.case_path else None
+                self.current_case = case_metadata.get('case_id')
                 
                 # Initialize session manager for the new case
                 if self.case_path:
@@ -1297,6 +1851,14 @@ class MainWindow(QMainWindow):
                 case_id = case_metadata.get('case_id')
                 if case_id:
                     self._refresh_files_tab(case_id)
+
+                self._sync_all_tabs_case_context(case_metadata, self.case_workspace)
+                
+                # Auto-load configuration hives and artifacts
+                if self.case_workspace:
+                    self._auto_load_configuration_hives(self.case_workspace)
+                    self._refresh_artifacts_tab(self.case_workspace)
+                    self._hydrate_tabs_from_unified_store(self.case_workspace, include_timeline=True, rebuild_index=True)
                 
                 self.logger.info(f"✅ Case created: {case_metadata.get('case_id')}")
                 self.statusBar.showMessage(
@@ -1341,8 +1903,14 @@ class MainWindow(QMainWindow):
             
             if case_metadata:
                 # Update main window state
-                self.case_path = case_metadata.get('case_path')
+                self.case_path = (
+                    case_metadata.get('case_path')
+                    or case_metadata.get('path')
+                    or str(Path('cases') / case_metadata.get('case_id', ''))
+                )
                 self.case_metadata = case_metadata
+                self.case_workspace = Path(self.case_path) if self.case_path else None
+                self.current_case = case_metadata.get('case_id')
                 
                 # Initialize session manager for the opened case
                 if self.case_path:
@@ -1356,6 +1924,14 @@ class MainWindow(QMainWindow):
                 case_id = case_metadata.get('case_id')
                 if case_id:
                     self._refresh_files_tab(case_id)
+
+                self._sync_all_tabs_case_context(case_metadata, self.case_workspace)
+                
+                # Auto-load configuration hives and artifacts
+                if self.case_workspace:
+                    self._auto_load_configuration_hives(self.case_workspace)
+                    self._refresh_artifacts_tab(self.case_workspace)
+                    self._hydrate_tabs_from_unified_store(self.case_workspace, include_timeline=True, rebuild_index=True)
                 
                 self.logger.info(f"✅ Case opened: {case_metadata.get('case_id')}")
                 self.statusBar.showMessage(
@@ -1379,21 +1955,142 @@ class MainWindow(QMainWindow):
             self.logger.info("Case opening cancelled by user")
     
     def _refresh_files_tab(self, case_id: str):
-        """Refresh the Files tab with data from the case database."""
+        """Refresh the Files tab with data from the case database or artifacts directory."""
         try:
+            if not self.vfs:
+                return
+
+            # Clear existing VFS data
+            self.vfs.clear_all()
+
+            populated = False
+
+            # Strategy 1: Populate from case index database (files table)
             case_files_db = Path("data/indexes") / f"{case_id}.db"
-            if case_files_db.exists() and self.vfs:
-                # Clear existing VFS data
-                self.vfs.clear_all()
-                # Populate from case database
+            if case_files_db.exists():
                 self._populate_vfs_from_files_db(case_files_db)
-                # Refresh the tree view if it exists
-                if hasattr(self, 'files_tab_widget') and self.files_tab_widget:
-                    if hasattr(self.files_tab_widget, 'refresh'):
-                        self.files_tab_widget.refresh()
-                self.logger.info(f"Files tab refreshed for case: {case_id}")
+                # Check if anything was actually added
+                if self.vfs.get_root_nodes():
+                    populated = True
+
+            # Strategy 2: Scan case workspace artifacts directory
+            if not populated and self.case_workspace:
+                artifacts_dir = Path(self.case_workspace) / "artifacts"
+                if artifacts_dir.exists():
+                    self._populate_vfs_from_case_artifacts(artifacts_dir)
+                    if self.vfs.get_root_nodes():
+                        populated = True
+
+            # Strategy 3: Scan extracted_data directory
+            if not populated and self.case_workspace:
+                extracted_dir = Path(self.case_workspace) / "extracted_data"
+                if extracted_dir.exists():
+                    self._populate_vfs_from_case_artifacts(extracted_dir)
+
+            # Refresh the tree view
+            if hasattr(self, 'files_tab_widget') and self.files_tab_widget:
+                if hasattr(self.files_tab_widget, 'refresh'):
+                    self.files_tab_widget.refresh()
+            self.logger.info(f"Files tab refreshed for case: {case_id}")
         except Exception as e:
             self.logger.warning(f"Could not refresh Files tab: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _populate_vfs_from_case_artifacts(self, scan_dir: Path):
+        """
+        Populate VFS by scanning a physical directory tree (artifacts or extracted_data).
+        
+        This is the fallback when no case index database exists.
+        Walks the directory tree and creates VFS nodes for all files/folders found.
+        """
+        from ..core.virtual_fs import VFSNodeType, VFSNode
+        from datetime import datetime
+
+        if not scan_dir.exists() or not self.vfs:
+            return
+
+        try:
+            nodes_to_add = []
+            parent_paths_added = set()
+            base_name = scan_dir.name  # e.g. "artifacts" or "extracted_data"
+
+            for root, dirs, files in os.walk(scan_dir):
+                rel_root = Path(root).relative_to(scan_dir)
+                # Build VFS path: /Evidence/{artifacts_subdir}/...
+                if str(rel_root) == '.':
+                    vfs_parent = '/'
+                else:
+                    parts = list(rel_root.parts)
+                    vfs_parent = '/Evidence/' + '/'.join(parts)
+
+                # Ensure parent directories exist
+                if vfs_parent != '/':
+                    dir_parts = vfs_parent.strip('/').split('/')
+                    for i in range(1, len(dir_parts) + 1):
+                        p_path = '/' + '/'.join(dir_parts[:i])
+                        if p_path not in parent_paths_added:
+                            p_parent = '/' + '/'.join(dir_parts[:i-1]) if i > 1 else '/'
+                            p_name = dir_parts[i-1]
+                            parent_node = VFSNode(
+                                id=0,
+                                path=p_path,
+                                name=p_name,
+                                parent_path=p_parent,
+                                node_type=VFSNodeType.FOLDER,
+                                size=0
+                            )
+                            nodes_to_add.append(parent_node)
+                            parent_paths_added.add(p_path)
+
+                # Add files
+                for fname in files:
+                    file_path = Path(root) / fname
+                    if vfs_parent == '/':
+                        vfs_file_path = f'/Evidence/{fname}'
+                    else:
+                        vfs_file_path = f'{vfs_parent}/{fname}'
+
+                    # Ensure /Evidence parent exists
+                    if '/Evidence' not in parent_paths_added:
+                        nodes_to_add.append(VFSNode(
+                            id=0, path='/Evidence', name='Evidence',
+                            parent_path='/', node_type=VFSNodeType.FOLDER, size=0
+                        ))
+                        parent_paths_added.add('/Evidence')
+
+                    try:
+                        stat = file_path.stat()
+                        size = stat.st_size
+                        modified_dt = datetime.fromtimestamp(stat.st_mtime)
+                        created_dt = datetime.fromtimestamp(stat.st_ctime)
+                    except Exception:
+                        size = 0
+                        modified_dt = None
+                        created_dt = None
+
+                    file_node = VFSNode(
+                        id=0,
+                        path=vfs_file_path,
+                        name=fname,
+                        parent_path=vfs_parent if vfs_parent != '/' else '/Evidence',
+                        node_type=VFSNodeType.FILE,
+                        size=size,
+                        created=created_dt,
+                        modified=modified_dt,
+                        metadata={
+                            'physical_path': str(file_path.absolute()),
+                            'source': base_name
+                        }
+                    )
+                    nodes_to_add.append(file_node)
+
+            if nodes_to_add:
+                added = self.vfs.add_nodes_batch(nodes_to_add)
+                logging.info(f"Populated VFS with {added} nodes from {scan_dir}")
+
+        except Exception as e:
+            logging.warning(f"Could not populate VFS from {scan_dir}: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1510,6 +2207,23 @@ class MainWindow(QMainWindow):
             if artifact_count > 0:
                 self._populate_artifacts_from_disk(artifacts_dir)
         
+        # Refresh Files tab with case data
+        self._refresh_files_tab(case_id)
+
+        self._sync_ingest_tab_case({
+            'case_id': case_id,
+            'path': str(case_path),
+        })
+        
+        # Auto-load registry hives into Configuration tab
+        self._auto_load_configuration_hives(case_path)
+        
+        # Refresh Artifacts tab with case artifacts
+        self._refresh_artifacts_tab(case_path)
+
+        # Hydrate routed tab payloads from normalized store
+        self._hydrate_tabs_from_unified_store(case_path, include_timeline=True, rebuild_index=True)
+        
         # Enable workspace mode
         self._set_workspace_active(True)
         
@@ -1562,6 +2276,23 @@ class MainWindow(QMainWindow):
         artifacts_dir = case_path / "artifacts"
         if artifacts_dir.exists():
             self._populate_artifacts_from_disk(artifacts_dir)
+        
+        # Refresh Files tab
+        self._refresh_files_tab(case_id)
+
+        self._sync_ingest_tab_case({
+            'case_id': case_id,
+            'path': str(case_path),
+        })
+        
+        # Auto-load configuration hives
+        self._auto_load_configuration_hives(case_path)
+        
+        # Refresh Artifacts tab
+        self._refresh_artifacts_tab(case_path)
+
+        # Rehydrate routed tab payloads from normalized store
+        self._hydrate_tabs_from_unified_store(case_path, include_timeline=True, rebuild_index=True)
         
         # Enable workspace
         self._set_workspace_active(True)
@@ -1789,23 +2520,11 @@ class MainWindow(QMainWindow):
             self.logger.info(f"Session manager initialized for case: {case_path}")
             
             # Update window title
-            case_id = case_metadata.get('case_id', 'Unknown')
+            case_id = case_metadata.get('case_id', 'N/A')
             self.setWindowTitle(f"FEPD - Forensic Evidence Parser Dashboard v1.0.0 - {case_id}")
             
-            # Add Case Details tab if not present
-            if hasattr(self, 'tabs'):
-                # Check if Case Details tab already exists
-                has_case_details_tab = False
-                for i in range(self.tabs.count()):
-                    if "Case Details" in self.tabs.tabText(i):
-                        has_case_details_tab = True
-                        break
-                
-                if not has_case_details_tab:
-                    from .tabs.case_details_tab import CaseDetailsTab
-                    self.case_details_tab = CaseDetailsTab(case_metadata, case_path)
-                    self.tabs.insertTab(0, self.case_details_tab, "📋 Case Details")
-                    self.logger.info("Case Details tab added")
+            # Ensure all tabs are bound to the selected case context.
+            self._sync_all_tabs_case_context(case_metadata, case_path)
             
             # Save config.json with image path
             config_file = case_path / "config.json"
@@ -1824,15 +2543,7 @@ class MainWindow(QMainWindow):
             
             self.logger.info(f"Saved config.json: {config_file}")
             
-            # Set case context for ML Analytics tab
-            if hasattr(self, 'ml_analytics_tab'):
-                workspace_root = case_path.parent.parent
-                self.ml_analytics_tab.set_case_context(
-                    case_path,
-                    data_source_path=workspace_root / "dataa",
-                    models_dir=workspace_root / "models"
-                )
-                self.logger.info("ML Analytics tab case context set")
+            self.logger.info("ML Analytics tab case context set")
             
             # Log to chain of custody
             self.coc.log_event(
@@ -1841,10 +2552,20 @@ class MainWindow(QMainWindow):
                 severity="INFO"
             )
             
-            # Set chatbot case context (triggers auto-indexing)
-            if hasattr(self, 'chatbot_tab'):
-                self.chatbot_tab.set_case_context(case_path, case_metadata)
-                self.logger.info("Chatbot tab case context set")
+            self.logger.info("Chatbot tab case context set")
+            
+            # Refresh Files tab with case data (artifacts directory or index DB)
+            if case_id:
+                self._refresh_files_tab(case_id)
+            
+            # Auto-load registry hives into Configuration tab
+            self._auto_load_configuration_hives(case_path)
+            
+            # Refresh Artifacts tab with case artifacts
+            self._refresh_artifacts_tab(case_path)
+
+            # Hydrate routed tab sections from normalized case index
+            self._hydrate_tabs_from_unified_store(case_path, include_timeline=True, rebuild_index=True)
             
             # Automatically start ingestion since user already selected the image
             self.logger.info(f"Starting automatic image ingestion: {image_path}")
@@ -1879,6 +2600,13 @@ class MainWindow(QMainWindow):
             file_path: Path to the forensic image file
         """
         self.logger.info(f"Processing disk image: {file_path}")
+
+        # Track current ingest source to avoid stale/incorrect completion routing.
+        ext = Path(file_path).suffix.lower()
+        if ext in {'.mem', '.dmp', '.raw', '.dump', '.memory', '.mddramimage', '.vmem'}:
+            self._active_ingest_source_type = 'memory'
+        else:
+            self._active_ingest_source_type = 'disk'
         
         # Verify case is set
         if not self.current_case:
@@ -2040,7 +2768,7 @@ class MainWindow(QMainWindow):
                                             self.progress_update_signal.emit(partition_progress + 3, f"Partition {i+1}: Recursive scan of filesystem...")
                                             extracted = self._extract_partition_recursive(
                                                 handler, fs_info, partition_dir, "/",
-                                                max_depth=4, partition_idx=i, total_partitions=len(partitions)
+                                                max_depth=8, partition_idx=i, total_partitions=len(partitions)
                                             )
                                             self.logger.info(f"Recursive extraction got {extracted} files from partition {i}")
                                         
@@ -2066,7 +2794,7 @@ class MainWindow(QMainWindow):
                                         
                                         # Extract raw partition data
                                         raw_file = partition_dir / "partition_raw.bin"
-                                        if handler.extract_raw_partition_data(i, raw_file, max_size=200*1024*1024):
+                                        if handler.extract_raw_partition_data(i, raw_file, max_size=None):
                                             self.logger.info(f"Raw partition data extracted: {raw_file}")
                                             total_extracted += 1
                                         
@@ -2123,7 +2851,7 @@ class MainWindow(QMainWindow):
                         
                         try:
                             # Check if this is a memory dump file
-                            mem_extensions = {'.mem', '.dmp', '.raw', '.dump', '.memory'}
+                            mem_extensions = {'.mem', '.dmp', '.raw', '.dump', '.memory', '.mddramimage'}
                             if image_path.suffix.lower() in mem_extensions:
                                 self.logger.info(f"Detected memory dump file: {image_path.name}")
                                 self.logger.info("Routing to memory analyzer instead of disk image handler...")
@@ -2132,11 +2860,35 @@ class MainWindow(QMainWindow):
                                 try:
                                     from ..modules.memory_analyzer import MemoryAnalyzer, analyze_memory_dump
                                     
-                                    # Analyze memory dump
-                                    self.progress_update_signal.emit(30, "Analyzing memory dump (quick scan)...")
-                                    self.logger.info("Starting memory dump analysis...")
-                                    
-                                    results = analyze_memory_dump(str(image_path), quick=True)
+                                    # Analyze full memory dump for forensic completeness.
+                                    self.progress_update_signal.emit(30, "Analyzing memory dump (full scan)...")
+                                    self.logger.info("Starting full memory dump analysis...")
+
+                                    analyzer = MemoryAnalyzer(str(image_path))
+                                    full_results = analyzer.reconstruct_live_state(max_scan_bytes=None)
+
+                                    # Keep backward-compatible structure for existing UI/indexing paths.
+                                    process_names = [
+                                        str(p.get('name') or '')
+                                        for p in full_results.get('processes', [])
+                                        if isinstance(p, dict) and p.get('name')
+                                    ]
+                                    network_ips = [
+                                        str(c.get('ip') or '')
+                                        for c in full_results.get('network_connections', [])
+                                        if isinstance(c, dict) and c.get('ip')
+                                    ]
+                                    results = {
+                                        'file': str(image_path),
+                                        'size_gb': round(image_path.stat().st_size / (1024 ** 3), 2),
+                                        'scan_time': full_results.get('analysis_time') or datetime.now().isoformat(),
+                                        'processes': sorted(set(process_names)),
+                                        'network': sorted(set(network_ips)),
+                                        'command_history': full_results.get('command_history', []),
+                                        'credential_indicators': full_results.get('credential_indicators', []),
+                                        'summary': full_results.get('summary', {}),
+                                        'scan_mode': 'full',
+                                    }
                                     
                                     if results and self.case_workspace:
                                         self.logger.info(f"Memory analysis complete: {len(results.get('processes', []))} processes, "
@@ -2146,13 +2898,19 @@ class MainWindow(QMainWindow):
                                         memory_dir = self.case_workspace / "memory_analysis"
                                         memory_dir.mkdir(exist_ok=True)
                                         
-                                        # Save results as JSON
+                                        # Save compatibility results JSON
                                         import json
                                         results_file = memory_dir / "quick_scan_results.json"
                                         with open(results_file, 'w') as f:
                                             json.dump(results, f, indent=2)
+
+                                        # Save full-fidelity results JSON
+                                        full_results_file = memory_dir / "full_scan_results.json"
+                                        with open(full_results_file, 'w') as f:
+                                            json.dump(full_results, f, indent=2)
                                         
                                         self.logger.info(f"Memory analysis results saved: {results_file}")
+                                        self.logger.info(f"Full memory analysis saved: {full_results_file}")
                                         
                                         # Store in case database for ps/netstat commands
                                         if hasattr(pipeline, 'db_handler'):
@@ -4112,7 +4870,7 @@ class MainWindow(QMainWindow):
         
         return extracted_count
     
-    def _extract_partition_recursive(self, handler, fs_info, output_dir: Path, path: str, max_depth: int = 3, current_depth: int = 0, partition_idx: int = 0, total_partitions: int = 1):
+    def _extract_partition_recursive(self, handler, fs_info, output_dir: Path, path: str, max_depth: int = 8, current_depth: int = 0, partition_idx: int = 0, total_partitions: int = 1):
         """
         Recursively extract files from a partition using DiskImageHandler.
         Robust error handling to prevent crashes.
@@ -4134,7 +4892,7 @@ class MainWindow(QMainWindow):
             return 0
         
         extracted_count = 0
-        max_files_per_dir = 500  # Limit files per directory to prevent memory issues
+        max_files_per_dir = 20000  # High ceiling for deep forensic extraction
         
         try:
             entries = handler.list_directory(fs_info, path)
@@ -4179,8 +4937,8 @@ class MainWindow(QMainWindow):
                     
                     elif entry.get('type') == 'file':
                         file_size = entry.get('size', 0)
-                        # Extract file (limit size to prevent huge files)
-                        if 0 < file_size < 50 * 1024 * 1024:  # Max 50MB per file
+                        # Extract full file; handler streams in chunks for memory safety.
+                        if file_size > 0:
                             try:
                                 success = handler.extract_file(fs_info, entry_path, local_path)
                                 if success:
@@ -4442,13 +5200,14 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'progress_dialog'):
             self.progress_dialog.close()
         
-        # Check if this was a memory dump analysis
+        # Check if this run was a memory dump analysis.
+        # Do not infer from directory existence alone, because mixed cases can contain both outputs.
         memory_analysis_dir: Optional[Path] = (
             self.case_workspace.joinpath("memory_analysis")
             if self.case_workspace is not None
             else None
         )
-        is_memory_dump = memory_analysis_dir.exists() if memory_analysis_dir else False
+        is_memory_dump = self._active_ingest_source_type == 'memory'
         
         if is_memory_dump and memory_analysis_dir:
             # Handle memory dump results
@@ -4496,6 +5255,14 @@ class MainWindow(QMainWindow):
                 )
                 
                 self.statusBar.showMessage(f"Memory analysis complete - {len(processes)} processes, {len(network_ips)} IPs")
+
+            # Ensure UI tabs consume latest normalized outputs even for memory-only runs.
+            if self.case_workspace:
+                self._hydrate_tabs_from_unified_store(self.case_workspace, include_timeline=True, rebuild_index=True)
+                self._refresh_artifacts_tab(self.case_workspace)
+                self._last_forensic_hydration_at = datetime.utcnow()
+
+            self._active_ingest_source_type = None
             
             # No timeline events for memory dumps - they're displayed via terminal commands
             return
@@ -4566,13 +5333,6 @@ class MainWindow(QMainWindow):
                     self.logger.info(f"Loaded events into Visualizations tab")
                 QApplication.processEvents()
                 
-                # Load into platform analysis tab
-                self.statusBar.showMessage("Loading Platform Analysis...", 0)
-                QApplication.processEvents()
-                time.sleep(0.01)
-                if hasattr(self, 'platform_analysis_tab'):
-                    self.platform_analysis_tab.load_events(classified_df)
-                    self.logger.info(f"Loaded events into Platform Analysis tab")
                 QApplication.processEvents()
         except Exception as e:
             self.logger.error(f"Error loading tabs: {e}")
@@ -4735,6 +5495,17 @@ class MainWindow(QMainWindow):
                 
                 self.logger.info(f"Updated artifacts table with {len(extracts)} artifacts")
                 QApplication.processEvents()
+
+                # Refresh non-timeline routed sections from latest normalized index.
+                if self.case_workspace:
+                    self._hydrate_tabs_from_unified_store(
+                        self.case_workspace,
+                        include_timeline=True,
+                        rebuild_index=True,
+                    )
+                    self._refresh_artifacts_tab(self.case_workspace)
+                    self._last_forensic_hydration_at = datetime.utcnow()
+                    QApplication.processEvents()
                 
                 # Show success message
                 self.statusBar.showMessage(f"✅ Analysis complete - {len(extracts)} artifacts, {event_count} events", 0)
@@ -4759,6 +5530,7 @@ class MainWindow(QMainWindow):
             self._pending_classified_df = None
             self._pending_pipeline = None
             self._pending_event_count = 0
+            self._active_ingest_source_type = None
         
         # Check and restore session
         self._check_and_restore_session()

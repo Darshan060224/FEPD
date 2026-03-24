@@ -44,6 +44,111 @@ class RegistryParser:
         r"ControlSet001\Services",
         r"ControlSet001\Control\Session Manager",
     ]
+
+    TARGETED_EXTRACTION_MAP = {
+        "SOFTWARE": {
+            "os_information": {
+                "path": r"Microsoft\Windows NT\CurrentVersion",
+                "fields": [
+                    "ProductName",
+                    "CurrentVersion",
+                    "InstallDate",
+                    "BuildLab",
+                    "CurrentBuildNumber",
+                    "RegisteredOwner",
+                    "RegisteredOrganization",
+                    "ProductId",
+                    "DisplayVersion",
+                ],
+            },
+            "installed_software": {
+                "path": r"Microsoft\Windows\CurrentVersion\Uninstall",
+                "subkey_fields": ["DisplayName", "DisplayVersion", "Publisher", "InstallDate"],
+            },
+            "security_config": {
+                "paths": [
+                    r"Microsoft\Windows Defender",
+                    r"Microsoft\Windows Defender\Real-Time Protection",
+                    r"Policies\Microsoft\WindowsFirewall",
+                    r"Policies\Microsoft\WindowsFirewall\DomainProfile",
+                    r"Policies\Microsoft\WindowsFirewall\StandardProfile",
+                ],
+            },
+            "uac_policy": {
+                "path": r"Microsoft\Windows\CurrentVersion\Policies\System",
+                "fields": ["EnableLUA", "ConsentPromptBehaviorAdmin", "PromptOnSecureDesktop"],
+            },
+        },
+        "SYSTEM": {
+            "hardware_cpu": {
+                "path": r"HARDWARE\DESCRIPTION\System\CentralProcessor",
+            },
+            "hardware_system": {
+                "path": r"ControlSet001\Control\SystemInformation",
+                "fallback_paths": [r"CurrentControlSet\Control\SystemInformation"],
+                "fields": ["BIOSVersion", "SystemManufacturer", "SystemProductName"],
+            },
+            "hardware_bios": {
+                "path": r"HARDWARE\DESCRIPTION\System\BIOS",
+                "fields": [
+                    "BIOSVendor",
+                    "BIOSVersion",
+                    "BaseBoardManufacturer",
+                    "BaseBoardProduct",
+                    "SystemManufacturer",
+                    "SystemProductName",
+                ],
+            },
+            "computer_name": {
+                "paths": [
+                    r"ControlSet001\Control\ComputerName\ComputerName",
+                    r"ControlSet001\Control\ComputerName\ActiveComputerName",
+                    r"CurrentControlSet\Control\ComputerName\ComputerName",
+                    r"CurrentControlSet\Control\ComputerName\ActiveComputerName",
+                ],
+                "fields": ["ComputerName"],
+            },
+            "time_information": {
+                "paths": [
+                    r"ControlSet001\Control\TimeZoneInformation",
+                    r"CurrentControlSet\Control\TimeZoneInformation",
+                ],
+                "fields": ["TimeZoneKeyName", "StandardName", "Bias", "ActiveTimeBias", "DynamicDaylightTimeDisabled"],
+            },
+            "shutdown_state": {
+                "paths": [
+                    r"ControlSet001\Control\Windows",
+                    r"CurrentControlSet\Control\Windows",
+                ],
+                "fields": ["ShutdownTime"],
+            },
+            "network_interfaces": {
+                "path": r"ControlSet001\Services\Tcpip\Parameters\Interfaces",
+                "fallback_paths": [r"CurrentControlSet\Services\Tcpip\Parameters\Interfaces"],
+                "fields": [
+                    "IPAddress",
+                    "DhcpIPAddress",
+                    "SubnetMask",
+                    "DefaultGateway",
+                    "NameServer",
+                    "DhcpServer",
+                    "Domain",
+                    "DhcpDomain",
+                    "NetworkAddress",
+                    "Description",
+                ],
+            },
+            "services": {
+                "path": r"ControlSet001\Services",
+                "fallback_paths": [r"CurrentControlSet\Services"],
+                "fields": ["ImagePath", "Start", "DisplayName"],
+            },
+            "usb_history": {
+                "path": r"ControlSet001\Enum\USBSTOR",
+                "fallback_paths": [r"CurrentControlSet\Enum\USBSTOR"],
+            },
+        },
+    }
     
     def __init__(self, logger: Optional[logging.Logger] = None):
         """
@@ -215,3 +320,274 @@ class RegistryParser:
             return " | ".join(str(v) for v in value[:10])  # Max 10 items
         
         return str(value)[:500]  # Truncate long strings
+
+    def parse_structured_artifacts(self, hive_path: Path, hive_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Parse targeted forensic fields from SYSTEM/SOFTWARE hives.
+
+        Args:
+            hive_path: Path to hive file
+            hive_name: Optional hive type override (SYSTEM/SOFTWARE)
+
+        Returns:
+            Dictionary with structured artifact groups.
+        """
+        hive_path = Path(hive_path)
+        inferred_hive = (hive_name or hive_path.name).upper()
+
+        if "SOFTWARE" in inferred_hive:
+            hive_type = "SOFTWARE"
+        elif "SYSTEM" in inferred_hive:
+            hive_type = "SYSTEM"
+        else:
+            return {"hive": inferred_hive, "supported": False, "artifacts": {}}
+
+        reg = Registry.Registry(str(hive_path))
+        root = reg.root()
+        artifacts: Dict[str, Any] = {}
+
+        if hive_type == "SOFTWARE":
+            artifacts["os_information"] = self._extract_fixed_fields(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SOFTWARE"]["os_information"]["path"],
+                self.TARGETED_EXTRACTION_MAP["SOFTWARE"]["os_information"]["fields"],
+            )
+            artifacts["installed_software"] = self._extract_subkey_table(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SOFTWARE"]["installed_software"]["path"],
+                self.TARGETED_EXTRACTION_MAP["SOFTWARE"]["installed_software"]["subkey_fields"],
+                name_field="DisplayName",
+            )
+            artifacts["security_config"] = self._extract_multi_paths(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SOFTWARE"]["security_config"]["paths"],
+            )
+            artifacts["uac_policy"] = self._extract_fixed_fields(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SOFTWARE"]["uac_policy"]["path"],
+                self.TARGETED_EXTRACTION_MAP["SOFTWARE"]["uac_policy"]["fields"],
+            )
+
+        if hive_type == "SYSTEM":
+            cpu_base = self._find_first_existing_key(
+                root,
+                [self.TARGETED_EXTRACTION_MAP["SYSTEM"]["hardware_cpu"]["path"]],
+            )
+            artifacts["hardware_cpu"] = self._extract_child_value_map(root, cpu_base)
+
+            sysinfo_paths = [self.TARGETED_EXTRACTION_MAP["SYSTEM"]["hardware_system"]["path"]]
+            sysinfo_paths.extend(self.TARGETED_EXTRACTION_MAP["SYSTEM"]["hardware_system"]["fallback_paths"])
+            sysinfo_base = self._find_first_existing_key(root, sysinfo_paths)
+            artifacts["hardware_system"] = self._extract_fixed_fields(
+                root,
+                sysinfo_base,
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["hardware_system"]["fields"],
+            )
+
+            artifacts["hardware_bios"] = self._extract_fixed_fields(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["hardware_bios"]["path"],
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["hardware_bios"]["fields"],
+            )
+
+            artifacts["computer_name"] = self._extract_first_existing_fields(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["computer_name"]["paths"],
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["computer_name"]["fields"],
+            )
+
+            artifacts["time_information"] = self._extract_first_existing_fields(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["time_information"]["paths"],
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["time_information"]["fields"],
+            )
+
+            shutdown_state = self._extract_first_existing_fields(
+                root,
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["shutdown_state"]["paths"],
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["shutdown_state"]["fields"],
+            )
+            shutdown_state["LastShutdownTime"] = self._normalize_shutdown_time(shutdown_state.get("ShutdownTime"))
+            artifacts["shutdown_state"] = shutdown_state
+
+            iface_paths = [self.TARGETED_EXTRACTION_MAP["SYSTEM"]["network_interfaces"]["path"]]
+            iface_paths.extend(self.TARGETED_EXTRACTION_MAP["SYSTEM"]["network_interfaces"]["fallback_paths"])
+            iface_base = self._find_first_existing_key(root, iface_paths)
+            artifacts["network_interfaces"] = self._extract_subkey_table(
+                root,
+                iface_base,
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["network_interfaces"]["fields"],
+                name_field=None,
+            )
+
+            services_paths = [self.TARGETED_EXTRACTION_MAP["SYSTEM"]["services"]["path"]]
+            services_paths.extend(self.TARGETED_EXTRACTION_MAP["SYSTEM"]["services"]["fallback_paths"])
+            services_base = self._find_first_existing_key(root, services_paths)
+            artifacts["services"] = self._extract_subkey_table(
+                root,
+                services_base,
+                self.TARGETED_EXTRACTION_MAP["SYSTEM"]["services"]["fields"],
+                name_field=None,
+            )
+
+            usbstor_paths = [self.TARGETED_EXTRACTION_MAP["SYSTEM"]["usb_history"]["path"]]
+            usbstor_paths.extend(self.TARGETED_EXTRACTION_MAP["SYSTEM"]["usb_history"]["fallback_paths"])
+            usbstor_base = self._find_first_existing_key(root, usbstor_paths)
+            artifacts["usb_history"] = self._extract_usb_history(root, usbstor_base)
+
+        return {
+            "hive": hive_type,
+            "supported": True,
+            "source": str(hive_path),
+            "artifacts": artifacts,
+        }
+
+    def _find_first_existing_key(self, root: Any, candidate_paths: List[str]) -> str:
+        for p in candidate_paths:
+            if not p:
+                continue
+            try:
+                root.find_key(p)
+                return p
+            except Exception:
+                continue
+        return candidate_paths[0] if candidate_paths else ""
+
+    def _extract_fixed_fields(self, root: Any, key_path: str, fields: List[str]) -> Dict[str, Any]:
+        data: Dict[str, Any] = {"key_path": key_path}
+        if not key_path:
+            return data
+        try:
+            key = root.find_key(key_path)
+        except Exception:
+            data["missing"] = True
+            return data
+
+        for field in fields:
+            data[field] = self._read_value(key, field)
+        return data
+
+    def _extract_multi_paths(self, root: Any, key_paths: List[str]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for p in key_paths:
+            try:
+                key = root.find_key(p)
+                out[p] = {
+                    v.name(): self._normalize_registry_value(v.value())
+                    for v in key.values()
+                }
+            except Exception:
+                out[p] = {"missing": True}
+        return out
+
+    def _extract_first_existing_fields(self, root: Any, key_paths: List[str], fields: List[str]) -> Dict[str, Any]:
+        selected = self._find_first_existing_key(root, key_paths)
+        return self._extract_fixed_fields(root, selected, fields)
+
+    def _extract_subkey_table(
+        self,
+        root: Any,
+        key_path: str,
+        fields: List[str],
+        name_field: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if not key_path:
+            return []
+        try:
+            key = root.find_key(key_path)
+        except Exception:
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for sub in key.subkeys():
+            row: Dict[str, Any] = {
+                "key_name": sub.name(),
+                "key_path": sub.path(),
+            }
+            for f in fields:
+                row[f] = self._read_value(sub, f)
+            if name_field and not row.get(name_field):
+                continue
+            rows.append(row)
+        return rows
+
+    def _extract_child_value_map(self, root: Any, key_path: str) -> List[Dict[str, Any]]:
+        if not key_path:
+            return []
+        try:
+            key = root.find_key(key_path)
+        except Exception:
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for sub in key.subkeys():
+            value_map = {
+                v.name(): self._normalize_registry_value(v.value())
+                for v in sub.values()
+            }
+            value_map["key_name"] = sub.name()
+            value_map["key_path"] = sub.path()
+            rows.append(value_map)
+        return rows
+
+    def _extract_usb_history(self, root: Any, key_path: str) -> List[Dict[str, Any]]:
+        if not key_path:
+            return []
+        try:
+            usbstor = root.find_key(key_path)
+        except Exception:
+            return []
+
+        devices: List[Dict[str, Any]] = []
+        for device_class in usbstor.subkeys():
+            for instance in device_class.subkeys():
+                devices.append(
+                    {
+                        "device_name": device_class.name(),
+                        "serial": instance.name(),
+                        "key_path": instance.path(),
+                    }
+                )
+        return devices
+
+    def _read_value(self, key: Any, value_name: str) -> Any:
+        try:
+            value = key.value(value_name).value()
+            return self._normalize_registry_value(value)
+        except Exception:
+            return None
+
+    def _normalize_registry_value(self, value: Any) -> Any:
+        if isinstance(value, bytes):
+            return value.hex()[:1024]
+        if isinstance(value, list):
+            return [self._normalize_registry_value(v) for v in value[:50]]
+        if isinstance(value, int):
+            return value
+        return str(value) if value is not None else None
+
+    def _normalize_shutdown_time(self, value: Any) -> Optional[str]:
+        """Convert Windows FILETIME shutdown marker to ISO UTC when possible."""
+        if value in (None, "", []):
+            return None
+
+        try:
+            raw: Optional[bytes] = None
+            if isinstance(value, bytes) and len(value) >= 8:
+                raw = value[:8]
+            elif isinstance(value, str):
+                text = value.strip().lower()
+                if text and all(c in "0123456789abcdef" for c in text) and len(text) >= 16:
+                    raw = bytes.fromhex(text[:16])
+
+            if not raw:
+                return None
+
+            ft = int.from_bytes(raw, byteorder="little", signed=False)
+            if ft <= 0:
+                return None
+
+            unix_seconds = (ft - 116444736000000000) / 10000000
+            return datetime.fromtimestamp(unix_seconds, tz=timezone.utc).isoformat()
+        except Exception:
+            return None

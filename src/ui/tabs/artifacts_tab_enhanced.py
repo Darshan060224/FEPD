@@ -48,6 +48,7 @@ from src.analysis.artifact_correlator import (
     ArtifactCorrelator, ProcessTreeBuilder,
     analyze_unknown_artifact, OPERATION_COLORS,
 )
+from src.services.unified_forensic_store import UnifiedForensicStore
 
 logger = logging.getLogger(__name__)
 
@@ -225,16 +226,44 @@ class ArtifactsTab(QWidget):
         self.case_manager = case_manager
         self.chain_logger: Optional[ChainLogger] = None
         self.worker: Optional[ArtifactScanWorker] = None
+        self._store: Optional[UnifiedForensicStore] = None
         
         self._artifacts = []  # All discovered artifacts
         self._filtered_artifacts = []  # Currently displayed
         self._tagged_artifacts = set()  # Tagged for reporting
+        self._selected_category: Optional[str] = None
         
         # Correlator / process-tree for cross-artifact intelligence
         self._correlator = ArtifactCorrelator()
         self._tree_builder = ProcessTreeBuilder()
         
         self._init_ui()
+        self._load_case_indexed_data()
+
+    def _resolve_case_path(self) -> Optional[Path]:
+        current = getattr(self.case_manager, 'current_case', None)
+        if not current:
+            return None
+        if isinstance(current, dict):
+            path_str = current.get('path', '')
+            return Path(path_str) if path_str else None
+        return None
+
+    def _load_case_indexed_data(self) -> None:
+        case_path = self._resolve_case_path()
+        if not case_path or not case_path.exists():
+            return
+
+        try:
+            self._store = UnifiedForensicStore(case_path)
+            stats = self._store.rebuild_case_index()
+            self.lbl_status.setText(
+                f"Indexed case data: {stats.get('files', 0)} files, {stats.get('artifacts', 0)} artifacts"
+            )
+            self._selected_category = None
+            self._on_filter_changed()
+        except Exception as exc:
+            logger.warning("Unified store load failed: %s", exc)
     
     def _init_ui(self):
         """Initialize UI."""
@@ -349,9 +378,9 @@ class ArtifactsTab(QWidget):
         layout.addLayout(filter_layout)
         
         # Artifacts table
-        self.table_artifacts = QTableWidget(0, 6)
+        self.table_artifacts = QTableWidget(0, 9)
         self.table_artifacts.setHorizontalHeaderLabels([
-            "Type", "Name", "Path", "Timestamp", "Size", "Actions"
+            "Type", "Name", "Path", "Timestamp", "User", "Source", "Confidence", "Size", "Actions"
         ])
         self.table_artifacts.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table_artifacts.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -480,29 +509,80 @@ class ArtifactsTab(QWidget):
     
     def _on_artifact_found(self, artifact: Dict):
         """Handle artifact discovered."""
-        self._artifacts.append(artifact)
-        self._add_artifact_to_table(artifact)
+        artifact_norm = self._normalize_artifact_record(artifact)
+        self._artifacts.append(artifact_norm)
+        self._add_artifact_to_table(artifact_norm)
         
         # Feed correlator
-        self._correlator.add_event(artifact)
+        self._correlator.add_event(self._to_correlator_event(artifact_norm))
         
         # Update statistics
         self._update_statistics()
     
     def _add_artifact_to_table(self, artifact: Dict):
         """Add artifact to table."""
+        artifact = self._normalize_artifact_record(artifact)
         row = self.table_artifacts.rowCount()
         self.table_artifacts.insertRow(row)
         
-        self.table_artifacts.setItem(row, 0, QTableWidgetItem(artifact['type']))
-        self.table_artifacts.setItem(row, 1, QTableWidgetItem(artifact['name']))
-        self.table_artifacts.setItem(row, 2, QTableWidgetItem(artifact['path']))
+        self.table_artifacts.setItem(row, 0, QTableWidgetItem(artifact.get('type', 'unknown')))
+        self.table_artifacts.setItem(row, 1, QTableWidgetItem(artifact.get('name', 'N/A')))
+        self.table_artifacts.setItem(row, 2, QTableWidgetItem(artifact.get('path', '')))
         
-        timestamp_str = artifact['timestamp'].strftime("%Y-%m-%d %H:%M:%S") if artifact['timestamp'] else "-"
+        ts = artifact.get('timestamp')
+        if hasattr(ts, 'strftime'):
+            timestamp_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+        elif ts:
+            timestamp_str = str(ts)
+        else:
+            timestamp_str = "-"
         self.table_artifacts.setItem(row, 3, QTableWidgetItem(timestamp_str))
-        
-        size_str = str(artifact['metadata'].get('size', '-')) if 'metadata' in artifact else "-"
-        self.table_artifacts.setItem(row, 4, QTableWidgetItem(size_str))
+
+        # User column — extract from path or metadata
+        user = artifact.get('user', '')
+        if not user:
+            path_lower = artifact.get('path', '').lower()
+            if '\\users\\' in path_lower or '/users/' in path_lower:
+                parts = artifact.get('path', '').replace('\\', '/').split('/Users/')
+                if len(parts) > 1:
+                    user = parts[1].split('/')[0]
+        self.table_artifacts.setItem(row, 4, QTableWidgetItem(user))
+
+        # Source column
+        source = artifact.get('source', artifact.get('evidence_id', 'Evidence'))
+        self.table_artifacts.setItem(row, 5, QTableWidgetItem(source))
+
+        # Confidence column
+        confidence_raw = artifact.get('confidence', 0.8)
+        if isinstance(confidence_raw, str) and confidence_raw.lower() in {'high', 'medium', 'low'}:
+            confidence_text = confidence_raw.title()
+            conf_value = {'High': 0.9, 'Medium': 0.7, 'Low': 0.5}[confidence_text]
+        else:
+            try:
+                conf_value = float(confidence_raw)
+            except Exception:
+                conf_value = 0.8
+            confidence_text = f"{conf_value:.2f}"
+
+        conf_item = QTableWidgetItem(confidence_text)
+        if conf_value >= 0.85:
+            conf_item.setForeground(QBrush(QColor('#4caf50')))
+        elif conf_value >= 0.6:
+            conf_item.setForeground(QBrush(QColor('#ff9800')))
+        else:
+            conf_item.setForeground(QBrush(QColor('#f44336')))
+        self.table_artifacts.setItem(row, 6, conf_item)
+
+        metadata = artifact.get('metadata') or artifact.get('metadata_json')
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        size_str = str(metadata.get('size', artifact.get('size', '-')))
+        self.table_artifacts.setItem(row, 7, QTableWidgetItem(size_str))
         
         # Store artifact data in table
         self.table_artifacts.item(row, 0).setData(Qt.ItemDataRole.UserRole, artifact)
@@ -540,28 +620,56 @@ class ArtifactsTab(QWidget):
     def _on_category_clicked(self, item: QTreeWidgetItem, column: int):
         """Handle category tree click."""
         category = item.data(0, Qt.ItemDataRole.UserRole)
-        if category:
-            self._filter_by_category(category)
+        if not category:
+            return
+        # Top-level node selects category; leaf node selects a specific type.
+        self._filter_by_category(category, item.parent() is None)
     
-    def _filter_by_category(self, category: str):
+    def _filter_by_category(self, category: str, is_category: bool = True):
         """Filter artifacts by category."""
-        # Apply filter logic
+        if is_category and category in ARTIFACT_CATEGORIES:
+            self._selected_category = category
+            if self.cmb_type_filter.currentText() != "All Types":
+                self.cmb_type_filter.setCurrentText("All Types")
+        else:
+            self._selected_category = None
+            self._set_type_filter_value(category)
         self._on_filter_changed()
     
     def _on_filter_changed(self):
         """Handle filter change."""
         filter_text = self.txt_filter.text().lower()
         type_filter = self.cmb_type_filter.currentText()
+
+        if self._store is not None:
+            rows = self._store.query_artifacts(
+                limit=50000,
+                offset=0,
+                type_filter=type_filter,
+                search_text=filter_text,
+            )
+            self._artifacts = [self._normalize_artifact_record(r) for r in rows]
+            self._populate_type_filter(self._artifacts)
+            visible_rows = self._apply_category_filter(self._artifacts)
+            self.table_artifacts.setRowCount(0)
+            for artifact in visible_rows:
+                self._add_artifact_to_table(artifact)
+            self._reload_correlator(visible_rows)
+            self._update_statistics()
+            return
         
         # Clear table
         self.table_artifacts.setRowCount(0)
         
         # Re-add filtered artifacts
         for artifact in self._artifacts:
-            if filter_text and filter_text not in artifact['name'].lower() and filter_text not in artifact['path'].lower():
+            if filter_text and filter_text not in str(artifact.get('name', '')).lower() and filter_text not in str(artifact.get('path', '')).lower():
                 continue
             
-            if type_filter != "All Types" and artifact['type'] != type_filter:
+            if type_filter != "All Types" and str(artifact.get('type', '')).lower() != type_filter.lower():
+                continue
+
+            if not self._artifact_matches_selected_category(artifact):
                 continue
             
             self._add_artifact_to_table(artifact)
@@ -580,27 +688,30 @@ class ArtifactsTab(QWidget):
             return
 
         file_path = artifact.get('path', '')
+        metadata = artifact.get('metadata')
+        if not isinstance(metadata, dict):
+            metadata = {}
 
         # ── 1. Info tab ──
-        ts_str = artifact['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if artifact.get('timestamp') else 'N/A'
-        meta_json = json.dumps(artifact.get('metadata', {}), indent=2)
+        ts_str = self._format_timestamp(artifact.get('timestamp'))
+        meta_json = json.dumps(metadata, indent=2)
         pid_info = ""
-        if artifact.get('metadata', {}).get('pid'):
+        if metadata.get('pid'):
             pid_info = (f"\n\nProcess Information\n───────────────────\n"
-                        f"PID: {artifact['metadata']['pid']}\n"
-                        f"Parent PID: {artifact['metadata'].get('ppid', 'N/A')}\n"
-                        f"User: {artifact['metadata'].get('user', 'N/A')}")
+                        f"PID: {metadata['pid']}\n"
+                        f"Parent PID: {metadata.get('ppid', 'N/A')}\n"
+                        f"User: {metadata.get('user', 'N/A')}")
         info_text = (
             f"Artifact Information\n"
             f"════════════════════\n\n"
-            f"Type:        {artifact['type']}\n"
+            f"Type:        {artifact.get('type', 'unknown')}\n"
             f"Subtype:     {artifact.get('subtype', 'N/A')}\n"
-            f"Name:        {artifact['name']}\n"
+            f"Name:        {artifact.get('name', 'N/A')}\n"
             f"Path:        {file_path}\n"
-            f"Description: {artifact['description']}\n\n"
+            f"Description: {artifact.get('description', '')}\n\n"
             f"Timestamp:   {ts_str}\n"
-            f"Evidence ID: {artifact['evidence_id']}\n"
-            f"Hash:        {artifact['hash']}\n"
+            f"Evidence ID: {artifact.get('evidence_id', 'N/A')}\n"
+            f"Hash:        {artifact.get('hash', 'N/A')}\n"
             f"\nMetadata:\n{meta_json}"
             f"{pid_info}"
         )
@@ -656,8 +767,13 @@ class ArtifactsTab(QWidget):
             self.txt_context.setPlainText("No surrounding context events available.")
 
         # ── 6. Unknown Artifact Analyzer tab ──
-        header_bytes = artifact.get('metadata', {}).get('header_bytes', b'')
-        file_size = artifact.get('metadata', {}).get('size', 0)
+        header_bytes = metadata.get('header_bytes', b'')
+        if isinstance(header_bytes, str):
+            try:
+                header_bytes = bytes.fromhex(header_bytes)
+            except ValueError:
+                header_bytes = header_bytes.encode('utf-8', errors='ignore')
+        file_size = metadata.get('size', artifact.get('size', 0))
         result = analyze_unknown_artifact(file_path, file_size=file_size, header_bytes=header_bytes)
         ua_lines = [
             "Unknown Artifact Analysis", "═════════════════════════", "",
@@ -759,6 +875,7 @@ class ArtifactsTab(QWidget):
     def set_case(self, case_info: Dict):
         """Set current case."""
         self.case_manager.current_case = case_info
+        self._load_case_indexed_data()
     
     def get_tagged_artifacts(self) -> List[str]:
         """Get list of tagged artifact paths."""
@@ -771,6 +888,133 @@ class ArtifactsTab(QWidget):
             self._correlator.load_events(events_df)
             self._tree_builder.load_events(events_df)
 
+    def _normalize_artifact_record(self, artifact: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize artifact schema from both scan-worker and unified-store rows."""
+        data = dict(artifact or {})
+
+        metadata = data.get('metadata')
+        if metadata is None:
+            metadata = data.get('metadata_json')
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        data['metadata'] = metadata
+        data.setdefault('type', str(data.get('source') or 'unknown'))
+        data.setdefault('name', str(data.get('path') or data.get('type') or 'N/A'))
+        data.setdefault('path', '')
+        data.setdefault('description', data.get('name', ''))
+        data.setdefault('timestamp', data.get('ts_utc') or '')
+        data.setdefault('evidence_id', data.get('source') or 'indexed')
+        data.setdefault('hash', 'N/A')
+        data.setdefault('source', data.get('artifact_source') or data.get('source') or 'Evidence')
+        data.setdefault('user', metadata.get('user', data.get('user', '')))
+        if data.get('size') is None and metadata.get('size') is not None:
+            data['size'] = metadata.get('size')
+        return data
+
+    def _to_correlator_event(self, artifact: Dict[str, Any]) -> Dict[str, Any]:
+        """Map artifact row to correlator event schema."""
+        metadata = artifact.get('metadata') if isinstance(artifact.get('metadata'), dict) else {}
+        return {
+            'filepath': artifact.get('path', ''),
+            'artifact_path': artifact.get('path', ''),
+            'path': artifact.get('path', ''),
+            'description': artifact.get('description', artifact.get('name', '')),
+            'timestamp': artifact.get('timestamp', ''),
+            'ts_utc': artifact.get('timestamp', ''),
+            'operation': metadata.get('operation', artifact.get('type', 'observed')),
+            'event_type': artifact.get('type', 'observed'),
+            'artifact_source': artifact.get('source', ''),
+            'source': artifact.get('source', ''),
+            'program': metadata.get('program', ''),
+            'exe_name': metadata.get('exe_name', metadata.get('program', '')),
+            'pid': metadata.get('pid', 0),
+            'ppid': metadata.get('ppid', 0),
+            'user_account': artifact.get('user', ''),
+            'user': artifact.get('user', ''),
+        }
+
+    def _reload_correlator(self, rows: List[Dict[str, Any]]) -> None:
+        """Reload correlator with currently visible artifacts for preview intelligence."""
+        try:
+            import pandas as pd
+            events = [self._to_correlator_event(r) for r in rows]
+            self._correlator = ArtifactCorrelator()
+            self._tree_builder = ProcessTreeBuilder()
+            if events:
+                df = pd.DataFrame(events)
+                self._correlator.load_events(df)
+                self._tree_builder.load_events(df)
+        except Exception as exc:
+            logger.warning("Failed to reload artifact correlator from store rows: %s", exc)
+
+    def _populate_type_filter(self, rows: List[Dict[str, Any]]) -> None:
+        """Populate artifact type combo from loaded rows without losing current selection."""
+        current = self.cmb_type_filter.currentText() or "All Types"
+        types = sorted({str(r.get('type', '')).strip() for r in rows if str(r.get('type', '')).strip()}, key=str.lower)
+        self.cmb_type_filter.blockSignals(True)
+        self.cmb_type_filter.clear()
+        self.cmb_type_filter.addItem("All Types")
+        for t in types:
+            self.cmb_type_filter.addItem(t)
+        idx = self.cmb_type_filter.findText(current, Qt.MatchFlag.MatchFixedString)
+        self.cmb_type_filter.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_type_filter.blockSignals(False)
+
+    def _set_type_filter_value(self, value: str) -> None:
+        idx = self.cmb_type_filter.findText(value, Qt.MatchFlag.MatchFixedString)
+        if idx < 0:
+            self.cmb_type_filter.blockSignals(True)
+            self.cmb_type_filter.addItem(value)
+            idx = self.cmb_type_filter.findText(value, Qt.MatchFlag.MatchFixedString)
+            self.cmb_type_filter.blockSignals(False)
+        if idx >= 0:
+            self.cmb_type_filter.setCurrentIndex(idx)
+
+    def _apply_category_filter(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not self._selected_category:
+            return rows
+        return [row for row in rows if self._artifact_matches_selected_category(row)]
+
+    def _artifact_matches_selected_category(self, artifact: Dict[str, Any]) -> bool:
+        if not self._selected_category:
+            return True
+        cat = self._selected_category
+        if cat not in ARTIFACT_CATEGORIES:
+            return True
+
+        type_lower = str(artifact.get('type', '')).lower()
+        source_lower = str(artifact.get('source', '')).lower()
+        name_lower = str(artifact.get('name', '')).lower()
+        path_lower = str(artifact.get('path', '')).lower()
+        subtype_lower = str(artifact.get('subtype', '')).lower()
+        haystack = f"{type_lower} {source_lower} {name_lower} {path_lower} {subtype_lower}"
+
+        aliases = {
+            'System': ['registry', 'prefetch', 'system', 'service', 'task', 'event_log'],
+            'User Activity': ['recent', 'jump', 'shell', 'usb', 'user', 'userassist'],
+            'Network': ['browser', 'download', 'cookie', 'wifi', 'network'],
+            'Security': ['security', 'firewall', 'defender', 'bitlocker', 'evtx', 'detection'],
+            'Execution': ['execution', 'prefetch', 'shimcache', 'amcache', 'bam', 'dam', 'command', 'process'],
+            'Communication': ['email', 'chat', 'social', 'message', 'pst', 'ost'],
+            'File System': ['mft', 'usn', 'file', 'filesystem', 'deleted', 'ads', 'lnk', 'file_activity'],
+            'Applications': ['application', 'app', 'extension', 'installed', 'recent'],
+        }
+        return any(token in haystack for token in aliases.get(cat, []))
+
+    @staticmethod
+    def _format_timestamp(ts: Any) -> str:
+        if ts is None or ts == "":
+            return "N/A"
+        if hasattr(ts, 'strftime'):
+            return ts.strftime('%Y-%m-%d %H:%M:%S')
+        return str(ts)
+
     def _update_statistics(self):
         """Refresh the expanded statistics panel."""
         total = len(self._artifacts)
@@ -781,19 +1025,37 @@ class ArtifactsTab(QWidget):
         cats = {'Prefetch': 0, 'Registry': 0, 'Browser': 0, 'Event Log': 0, 'File System': 0, 'suspicious': 0}
         for a in self._artifacts:
             atype = (a.get('type', '') + ' ' + a.get('subtype', '')).lower()
-            if 'prefetch' in atype:
+            path_low = str(a.get('path', '')).lower().replace('\\', '/')
+            name_low = str(a.get('name', '')).lower()
+            combined = f"{atype} {path_low} {name_low}"
+
+            if ('prefetch' in combined) or path_low.endswith('.pf'):
                 cats['Prefetch'] += 1
-            if 'registry' in atype:
+            if (
+                'registry' in combined
+                or '/system32/config/' in path_low
+                or any(hive in name_low for hive in ['ntuser.dat', 'usrclass.dat', 'sam', 'security', 'software', 'system'])
+            ):
                 cats['Registry'] += 1
-            if 'browser' in atype or 'history' in atype or 'download' in atype:
+            if (
+                any(token in combined for token in ['browser', 'history', 'cookies', 'downloads', 'webcache', 'login data'])
+                or any(token in path_low for token in ['/chrome/', '/edge/', '/firefox/', '/mozilla/'])
+            ):
                 cats['Browser'] += 1
-            if 'event' in atype or 'evtx' in atype:
+            if (
+                'event' in combined
+                or 'evtx' in combined
+                or path_low.endswith('.evtx')
+                or any(token in combined for token in ['process', 'network', 'command', 'execution', 'detection'])
+            ):
                 cats['Event Log'] += 1
-            if 'mft' in atype or 'usn' in atype or 'file' in atype:
+            if (
+                any(token in combined for token in ['mft', 'usn', 'filesystem', 'file system', '$mft', '$usnjrnl', 'lnk'])
+                or path_low.endswith('.lnk')
+            ):
                 cats['File System'] += 1
             # Simple suspicious heuristic
-            path_low = a.get('path', '').lower()
-            if any(s in path_low for s in ['\\temp\\', '\\tmp\\', 'appdata\\local\\temp']):
+            if any(s in path_low for s in ['/temp/', '/tmp/', 'appdata/local/temp']) or 'detection' in combined:
                 cats['suspicious'] += 1
 
         self.lbl_prefetch.setText(f"Prefetch: {cats['Prefetch']}")

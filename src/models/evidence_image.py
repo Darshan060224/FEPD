@@ -36,6 +36,7 @@ class ImageFormat(Enum):
     AFF     = "AFF"        # Advanced Forensics Format
     MEM     = "MEM"        # Memory dump
     VMEM    = "VMEM"       # VMware memory file
+    MDDRAM  = "MDDRAM"     # MDD RAM Image (.mddramimage)
     UNKNOWN = "UNKNOWN"
 
     @classmethod
@@ -54,6 +55,7 @@ class ImageFormat(Enum):
             ".aff":  cls.AFF,
             ".mem":  cls.MEM,
             ".vmem": cls.VMEM,
+            ".mddramimage": cls.MDDRAM,
         }
         return mapping.get(ext.lower(), cls.UNKNOWN)
 
@@ -88,7 +90,7 @@ SUPPORTED_DISK_EXTENSIONS: set[str] = {
 }
 
 SUPPORTED_MEMORY_EXTENSIONS: set[str] = {
-    ".mem", ".vmem",
+    ".mem", ".vmem", ".mddramimage",
 }
 
 SUPPORTED_EXTENSIONS: set[str] = SUPPORTED_DISK_EXTENSIONS | SUPPORTED_MEMORY_EXTENSIONS
@@ -106,6 +108,7 @@ FORMAT_DESCRIPTIONS: Dict[str, str] = {
     ".aff":   "Advanced Forensics Format",
     ".mem":   "Physical Memory Dump",
     ".vmem":  "VMware Memory File",
+    ".mddramimage": "MDD RAM Image (Physical Memory)",
 }
 
 

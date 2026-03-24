@@ -386,6 +386,36 @@ class _DetailsPanel(QFrame):
         self._activities.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self._activities, 1)
 
+        # MACB Timeline section — timestamp analysis
+        self._macb_title = QLabel("MACB Timeline")
+        self._macb_title.setStyleSheet("color: #ff9800; font-size: 11px; font-weight: bold;")
+        lay.addWidget(self._macb_title)
+
+        self._macb = QLabel("")
+        self._macb.setStyleSheet(
+            "background: #1a1a1a; color: #c0c0c0; font-family: 'Consolas', monospace; "
+            "font-size: 10px; padding: 6px; border: 1px solid #333; border-radius: 3px;"
+        )
+        self._macb.setWordWrap(True)
+        self._macb.setMinimumHeight(50)
+        self._macb.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self._macb, 1)
+
+        # File Intelligence section — forensic file analysis
+        self._intel_title = QLabel("File Intelligence")
+        self._intel_title.setStyleSheet("color: #4fc3f7; font-size: 11px; font-weight: bold;")
+        lay.addWidget(self._intel_title)
+
+        self._intel = QLabel("")
+        self._intel.setStyleSheet(
+            "background: #1a1a2e; color: #c0c0c0; font-family: 'Consolas', monospace; "
+            "font-size: 10px; padding: 6px; border: 1px solid #333; border-radius: 3px;"
+        )
+        self._intel.setWordWrap(True)
+        self._intel.setMinimumHeight(50)
+        self._intel.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self._intel, 1)
+
         self._current_path: Optional[str] = None
         self._current_size: int = 0
 
@@ -418,6 +448,12 @@ class _DetailsPanel(QFrame):
 
         # Populate activities from artifact correlation
         self._show_activities(entry)
+
+        # Populate MACB timeline
+        self._show_macb(entry)
+
+        # Populate file intelligence
+        self._show_intelligence(entry)
 
     def show_preview(self, preview_data: Dict) -> None:
         ptype = preview_data.get("type", "none")
@@ -483,6 +519,8 @@ class _DetailsPanel(QFrame):
         self._preview.setPixmap(QPixmap())
         self._preview.setText("")
         self._activities.setText("")
+        self._macb.setText("")
+        self._intel.setText("")
         self._btn_hash.setVisible(False)
         self._current_path = None
 
@@ -555,6 +593,109 @@ class _DetailsPanel(QFrame):
             self._activities.setText("No correlated activities found")
         else:
             self._activities.setText("\n".join(activities))
+
+    def _show_macb(self, entry: FileEntry) -> None:
+        """Show MACB (Modified/Accessed/Changed/Born) timeline for the file."""
+        if entry.is_directory:
+            self._macb.setText("")
+            return
+
+        lines = []
+        macb = ""
+
+        # Modified
+        if entry.modified:
+            lines.append(f"M  Modified:  {entry.display_modified_full}")
+            macb += "M"
+        else:
+            macb += "."
+
+        # Accessed
+        if entry.accessed:
+            lines.append(f"A  Accessed:  {entry.display_accessed}")
+            macb += "A"
+        else:
+            macb += "."
+
+        # Changed (use metadata change if available, else modified)
+        changed = entry.metadata.get("changed") or entry.metadata.get("mft_modified")
+        if changed:
+            lines.append(f"C  Changed:   {changed}")
+            macb += "C"
+        else:
+            macb += "."
+
+        # Born (Created)
+        if entry.created:
+            lines.append(f"B  Created:   {entry.display_created}")
+            macb += "B"
+        else:
+            macb += "."
+
+        # Add MACB flags summary
+        lines.insert(0, f"Flags: [{macb}]")
+
+        # Timestamp anomaly detection
+        if entry.created and entry.modified:
+            try:
+                from datetime import datetime
+                c = datetime.fromisoformat(str(entry.created))
+                m = datetime.fromisoformat(str(entry.modified))
+                if m < c:
+                    lines.append("⚠ ANOMALY: Modified before Created (timestomping?)")
+            except Exception:
+                pass
+
+        self._macb.setText("\n".join(lines))
+
+    def _show_intelligence(self, entry: FileEntry) -> None:
+        """Show forensic file intelligence for the selected file."""
+        if entry.is_directory:
+            self._intel.setText("")
+            return
+
+        lines = []
+        ext = entry.extension.lower() if entry.extension else ""
+        lines.append(f"File Type:  {entry.display_type}")
+        lines.append(f"Extension:  .{ext}" if ext else "Extension:  (none)")
+        lines.append(f"True Type:  {entry.mime_type or 'Unknown'}")
+
+        # ML risk score
+        ml_score = entry.metadata.get("ml_score")
+        if ml_score is not None and isinstance(ml_score, (int, float)):
+            lines.append(f"Risk Score: {ml_score:.2f}")
+        else:
+            lines.append("Risk Score: —")
+
+        # Source information
+        if entry.evidence_id:
+            lines.append(f"Source:     {entry.evidence_id}")
+        if not entry.is_allocated:
+            lines.append("Extracted:  Unallocated space (carved)")
+        elif entry.is_deleted:
+            lines.append("Extracted:  Deleted file recovery")
+        else:
+            lines.append("Extracted:  Allocated file")
+
+        # Owner
+        owner = entry.metadata.get("owner")
+        if owner:
+            lines.append(f"Owner:      {owner}")
+
+        # Flags
+        flags = []
+        if entry.is_suspicious:
+            flags.append("Suspicious")
+        if entry.is_deleted:
+            flags.append("Deleted")
+        if ext in ("exe", "dll", "bat", "cmd", "ps1", "vbs", "scr", "com", "msi"):
+            flags.append("Executable")
+        if ml_score and isinstance(ml_score, (int, float)) and ml_score > 0.7:
+            flags.append("High Risk")
+        if flags:
+            lines.append(f"Flags:      ⚠ {', '.join(flags)}")
+
+        self._intel.setText("\n".join(lines))
 
 
 # ============================================================================
@@ -790,6 +931,20 @@ class FilesTab(QWidget):
         self.status_items = QLabel("")
         self.status_items.setStyleSheet("color: #888; font-size: 11px;")
         sb.addWidget(self.status_items)
+
+        # Forensic file statistics
+        self.status_deleted = QLabel("")
+        self.status_deleted.setStyleSheet("color: #f44336; font-size: 10px;")
+        sb.addWidget(self.status_deleted)
+
+        self.status_executables = QLabel("")
+        self.status_executables.setStyleSheet("color: #ff9800; font-size: 10px;")
+        sb.addWidget(self.status_executables)
+
+        self.status_suspicious = QLabel("")
+        self.status_suspicious.setStyleSheet("color: #e91e63; font-size: 10px; font-weight: bold;")
+        sb.addWidget(self.status_suspicious)
+
         sb.addStretch()
         self.status_ro = QLabel("🔒 Evidence is read-only — forensic integrity protected")
         self.status_ro.setStyleSheet("color: #4caf50; font-size: 10px; font-weight: bold;")
@@ -925,6 +1080,17 @@ class FilesTab(QWidget):
             self.status_items.setText(f"{loaded} of {total} items loaded")
         else:
             self.status_items.setText(f"{total} items")
+
+        # Forensic file statistics
+        _exe_exts = {"exe", "dll", "bat", "cmd", "ps1", "vbs", "scr", "com", "msi"}
+        deleted = sum(1 for e in entries if e.is_deleted)
+        execs = sum(1 for e in entries if not e.is_directory and e.extension in _exe_exts)
+        suspicious = sum(1 for e in entries if e.is_suspicious)
+
+        self.status_deleted.setText(f"🗑️ {deleted} deleted" if deleted else "")
+        self.status_executables.setText(f"⚡ {execs} executables" if execs else "")
+        self.status_suspicious.setText(f"🚨 {suspicious} suspicious" if suspicious else "")
+
         self.details_panel.clear()
 
     def _on_scroll_near_end(self, value: int):
@@ -1076,6 +1242,19 @@ class FilesTab(QWidget):
             a_exp = menu.addAction("📤 Export to Workspace")
             a_exp.triggered.connect(lambda: self._export_file(entry))
 
+            # ── Forensic analysis actions ────────────────────────
+            menu.addSeparator()
+            a_ml = menu.addAction("🤖 Send to ML Analysis")
+            a_ml.triggered.connect(lambda: self._send_to_ml(entry))
+            a_tag = menu.addAction("🏷️ Tag as Evidence")
+            a_tag.triggered.connect(lambda: self._tag_as_evidence(entry))
+            a_note = menu.addAction("📝 Add Investigator Note")
+            a_note.triggered.connect(lambda: self._add_file_note(entry))
+            a_copy = menu.addAction("📋 Copy Path")
+            a_copy.triggered.connect(lambda: self._copy_path(entry))
+            a_copy_hash = menu.addAction("📋 Copy Hash")
+            a_copy_hash.triggered.connect(lambda: self._copy_hash(entry))
+
         # Blocked actions
         menu.addSeparator()
         hdr = menu.addAction("━━ ⛔ BLOCKED (Forensic) ━━")
@@ -1088,6 +1267,55 @@ class FilesTab(QWidget):
         notice.setEnabled(False)
 
         menu.exec(global_pos)
+
+    def _send_to_ml(self, entry: FileEntry):
+        """Send file to ML analysis pipeline."""
+        self.terminal_command.emit(f"ml_analyze {entry.path}")
+        if self.coc_logger:
+            self.coc_logger("FILE_SENT_TO_ML", {"path": entry.path, "size": entry.size})
+        QMessageBox.information(
+            self, "ML Analysis",
+            f"File queued for ML analysis:\n{entry.name}\n\n"
+            "Check ML Analytics tab for results."
+        )
+
+    def _tag_as_evidence(self, entry: FileEntry):
+        """Tag a file as key evidence with CoC logging."""
+        if self.coc_logger:
+            self.coc_logger("EVIDENCE_TAGGED", {
+                "path": entry.path,
+                "name": entry.name,
+                "sha256": entry.sha256 or "pending",
+            })
+        QMessageBox.information(
+            self, "Evidence Tagged",
+            f"✅ Tagged as evidence:\n{entry.name}\n\n"
+            "Action logged to Chain of Custody."
+        )
+
+    def _add_file_note(self, entry: FileEntry):
+        """Add an investigator note about this file."""
+        from PyQt6.QtWidgets import QInputDialog
+        note, ok = QInputDialog.getMultiLineText(
+            self, "Investigator Note",
+            f"Add note for: {entry.name}",
+        )
+        if ok and note.strip():
+            if self.coc_logger:
+                self.coc_logger("INVESTIGATOR_NOTE", {
+                    "path": entry.path,
+                    "note": note.strip()[:500],
+                })
+
+    def _copy_path(self, entry: FileEntry):
+        QApplication.clipboard().setText(entry.path)
+
+    def _copy_hash(self, entry: FileEntry):
+        h = entry.sha256 or entry.md5 or ""
+        if h:
+            QApplication.clipboard().setText(h)
+        else:
+            QMessageBox.information(self, "No Hash", "Hash not computed yet. Use 'Compute SHA-256' first.")
 
     def _open_with_type(self, entry: FileEntry, viewer_type: str):
         try:

@@ -85,7 +85,7 @@ _EXT_TYPE_MAP: Dict[str, str] = {
     "lnk": "Windows Shortcut", "pf": "Prefetch File",
     "reg": "Registry Export", "hiv": "Registry Hive",
     "mem": "Memory Dump", "dmp": "Crash Dump",
-    "vmem": "Virtual Memory",
+    "vmem": "Virtual Memory", "mddramimage": "MDD RAM Image",
     # Config
     "ini": "INI Config", "cfg": "Config File",
     "conf": "Config File", "log": "Log File",
@@ -115,7 +115,7 @@ _EXT_ICON_MAP: Dict[str, str] = {
     "reg": "🗝️", "hiv": "🗝️",
     "evtx": "📋", "evt": "📋", "etl": "📋",
     "e01": "💿", "l01": "💿", "dd": "💿", "raw": "💿",
-    "mem": "🧠", "dmp": "🧠", "vmem": "🧠",
+    "mem": "🧠", "dmp": "🧠", "vmem": "🧠", "mddramimage": "🧠",
     "pcap": "🌐", "pcapng": "🌐",
 }
 

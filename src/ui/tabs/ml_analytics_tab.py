@@ -12,7 +12,8 @@ Copyright (c) 2025 FEPD Development Team
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
+from datetime import datetime
 import pandas as pd
 
 from PyQt6.QtWidgets import (
@@ -253,12 +254,67 @@ class MLAnalyticsTab(QWidget):
         
         # Sub-tabs for different ML features
         self.sub_tabs = QTabWidget()
+        self.sub_tabs.addTab(self._create_overview_tab(), "📊 Top Findings")
         self.sub_tabs.addTab(self._create_anomaly_tab(), "🔍 Anomaly Detection")
         self.sub_tabs.addTab(self._create_ueba_tab(), "👤 UEBA Profiling")
         self.sub_tabs.addTab(self._create_network_intrusion_tab(), "🌐 Network Intrusion")
         self.sub_tabs.addTab(self._create_threat_intel_tab(), "🛡️ Threat Intelligence")
         
         layout.addWidget(self.sub_tabs)
+
+    def _create_overview_tab(self) -> QWidget:
+        """Create Top Findings overview dashboard."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        layout.addWidget(QLabel("<h3>📊 ML Investigation Overview</h3>"))
+        layout.addWidget(QLabel(
+            "Run any analysis below to populate this dashboard with top findings.\n"
+            "Results are cached and displayed here for quick investigator reference."
+        ))
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left: Top Suspicious Processes
+        proc_group = QGroupBox("⚡ Top Suspicious Processes")
+        proc_lay = QVBoxLayout(proc_group)
+        self.overview_proc_table = QTableWidget(0, 3)
+        self.overview_proc_table.setHorizontalHeaderLabels(["Process", "Risk Score", "Reason"])
+        self.overview_proc_table.horizontalHeader().setStretchLastSection(True)
+        proc_lay.addWidget(self.overview_proc_table)
+        splitter.addWidget(proc_group)
+
+        # Middle: Top Suspicious Files
+        file_group = QGroupBox("📄 Top Suspicious Files")
+        file_lay = QVBoxLayout(file_group)
+        self.overview_file_table = QTableWidget(0, 3)
+        self.overview_file_table.setHorizontalHeaderLabels(["File", "Risk Score", "Reason"])
+        self.overview_file_table.horizontalHeader().setStretchLastSection(True)
+        file_lay.addWidget(self.overview_file_table)
+        splitter.addWidget(file_group)
+
+        # Right: High Risk Users
+        user_group = QGroupBox("👤 High Risk Users")
+        user_lay = QVBoxLayout(user_group)
+        self.overview_user_table = QTableWidget(0, 3)
+        self.overview_user_table.setHorizontalHeaderLabels(["User", "Risk Score", "Alerts"])
+        self.overview_user_table.horizontalHeader().setStretchLastSection(True)
+        user_lay.addWidget(self.overview_user_table)
+        splitter.addWidget(user_group)
+
+        layout.addWidget(splitter)
+
+        # Anomaly Score summary
+        score_group = QGroupBox("📈 Anomaly Score Distribution")
+        score_lay = QVBoxLayout(score_group)
+        self.overview_summary = QTextEdit()
+        self.overview_summary.setReadOnly(True)
+        self.overview_summary.setMaximumHeight(200)
+        self.overview_summary.setPlaceholderText("Run an analysis to see overall anomaly score distribution...")
+        score_lay.addWidget(self.overview_summary)
+        layout.addWidget(score_group)
+
+        return widget
     
     def _create_anomaly_tab(self) -> QWidget:
         """Create Anomaly Detection sub-tab."""
@@ -840,6 +896,16 @@ class MLAnalyticsTab(QWidget):
             anomaly_rate = (anomalies_detected / total_events) if total_events else 0.0
         clock_skew_flags = report.get('clock_skew_analysis', {}).get('potential_attacks', 0)
 
+        high_risk_count = 0
+        if not anomalies.empty and 'severity' in anomalies.columns:
+            high_risk_count = int(
+                anomalies['severity']
+                .astype(str)
+                .str.lower()
+                .isin(['high', 'critical'])
+                .sum()
+            )
+
         summary = f"""
     📊 Anomaly Detection Summary
 
@@ -854,6 +920,26 @@ class MLAnalyticsTab(QWidget):
         
         self.anomaly_summary.setText(summary)
         self._show_status("anomaly", f"✅ Found {anomalies_detected} anomalies")
+
+        # Persist runtime anomaly counters for Case Details summary synchronization.
+        if self.case_path:
+            try:
+                import json
+                out_dir = self.case_path / "results"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "generated_at": datetime.utcnow().isoformat() + "Z",
+                    "anomalies_detected": int(anomalies_detected),
+                    "high_risk_events": int(high_risk_count),
+                    "clock_skew_flags": int(clock_skew_flags),
+                    "total_events": int(total_events or 0),
+                }
+                (out_dir / "runtime_ml_summary.json").write_text(
+                    json.dumps(payload, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                self.logger.warning("Could not persist runtime ML summary: %s", exc)
     
     def _display_ueba_results(self, results: Dict):
         """Display UEBA profiling results."""
@@ -1304,8 +1390,13 @@ Detection Threshold: {anomalies.get('threshold_used', 'N/A')}
         
         self.logger.info(f"Displayed {len(findings)} findings in UEBA tab")
     
-    def load_events(self, events_df: pd.DataFrame):
-        """Load events for analysis."""
+    def load_events(self, events_df: pd.DataFrame, auto_analyze: bool = True):
+        """Load events for analysis.
+
+        Args:
+            events_df: Normalized events dataframe.
+            auto_analyze: If True, automatically starts anomaly analysis.
+        """
         self.events_df = events_df
         self.logger.info(f"Loaded {len(events_df)} events for ML analysis")
         
@@ -1313,8 +1404,204 @@ Detection Threshold: {anomalies.get('threshold_used', 'N/A')}
         self._show_status("ueba", f"✅ Loaded {len(events_df)} events")
         self._show_status("threat_intel", f"✅ Loaded {len(events_df)} events")
         
-        # Auto-run anomaly detection if we have events
-        if len(events_df) > 0:
+        # Auto-run anomaly detection if requested
+        if auto_analyze and len(events_df) > 0:
             from PyQt6.QtCore import QTimer
             # Delay to allow UI to update
             QTimer.singleShot(1500, lambda: self._run_analysis("anomaly"))
+
+    def apply_top_findings(self, findings: List[Dict[str, Any]]) -> None:
+        """Populate ML overview widgets from routed Top Findings section."""
+        self.overview_proc_table.setRowCount(0)
+        self.overview_file_table.setRowCount(0)
+        self.overview_user_table.setRowCount(0)
+
+        if not findings:
+            self.overview_summary.setText("No deterministic findings available for this case.")
+            return
+
+        proc_rows = []
+        file_rows = []
+        user_rows = []
+
+        for finding in findings:
+            name = str(finding.get('name') or 'unknown')
+            reason = str(finding.get('reason') or '')
+            reason_lower = reason.lower()
+            risk = float(finding.get('risk_score') or 0)
+            ftype = str(finding.get('type') or '').lower()
+            if not ftype:
+                ftype = 'file'
+
+            row = (name, risk, reason)
+            if 'user' in ftype or 'account' in ftype:
+                user_rows.append(row)
+            elif any(k in ftype for k in ('process', 'execution', 'command', 'detection')) or any(
+                k in reason_lower for k in ('execution-related', 'process', 'command', 'shell')
+            ):
+                proc_rows.append(row)
+            else:
+                file_rows.append(row)
+
+        self._fill_overview_table(self.overview_proc_table, proc_rows[:10])
+        self._fill_overview_table(self.overview_file_table, file_rows[:10])
+        self._fill_overview_table(self.overview_user_table, user_rows[:10])
+
+        top_score = max((r[1] for r in (proc_rows + file_rows + user_rows)), default=0.0)
+        self.overview_summary.setText(
+            "\n".join([
+                "Top Findings loaded from deterministic forensic routing.",
+                f"Total Findings: {len(findings)}",
+                f"Highest Risk Score: {top_score:.2f}",
+                f"Process Findings: {len(proc_rows)} | User Findings: {len(user_rows)} | File Findings: {len(file_rows)}",
+            ])
+        )
+
+    def apply_threat_indicators(self, indicators: List[Dict[str, Any]]) -> None:
+        """Populate Threat Intelligence table from routed indicators."""
+        self.ti_table.setRowCount(0)
+        for ind in indicators:
+            row = self.ti_table.rowCount()
+            self.ti_table.insertRow(row)
+            self.ti_table.setItem(row, 0, QTableWidgetItem(str(ind.get('indicator', 'N/A'))))
+            self.ti_table.setItem(row, 1, QTableWidgetItem(str(ind.get('type', 'N/A'))))
+            self.ti_table.setItem(row, 2, QTableWidgetItem(str(ind.get('threat_name', 'Observed Indicator'))))
+            self.ti_table.setItem(row, 3, QTableWidgetItem(str(ind.get('risk', 'MEDIUM')).upper()))
+            self.ti_table.setItem(row, 4, QTableWidgetItem(str(ind.get('source', 'Evidence'))))
+            self.ti_table.setItem(row, 5, QTableWidgetItem(str(ind.get('reason', 'Indicator observed in evidence'))))
+
+        self.ti_summary.setText(
+            f"Loaded {len(indicators)} indicators from forensic evidence routing."
+        )
+        self._show_status("threat_intel", f"✅ Loaded {len(indicators)} routed indicators")
+
+    def apply_anomaly_findings(self, anomalies: List[Dict[str, Any]]) -> None:
+        """Populate Anomaly Detection tab from routed forensic anomalies."""
+        self.anomaly_table.setRowCount(0)
+
+        for anomaly in anomalies:
+            row = self.anomaly_table.rowCount()
+            self.anomaly_table.insertRow(row)
+
+            score = float(anomaly.get('score') or anomaly.get('anomaly_score') or 0.0)
+            severity = str(anomaly.get('severity') or 'medium').upper()
+            evidence = anomaly.get('evidence') or []
+            if isinstance(evidence, list):
+                evidence_text = ', '.join(str(x) for x in evidence[:3])
+            else:
+                evidence_text = str(evidence)
+
+            self.anomaly_table.setItem(row, 0, QTableWidgetItem(str(anomaly.get('timestamp', 'N/A'))))
+            self.anomaly_table.setItem(row, 1, QTableWidgetItem(str(anomaly.get('name') or anomaly.get('event_type') or 'N/A')))
+            self.anomaly_table.setItem(row, 2, QTableWidgetItem(str(anomaly.get('source', 'Routed Forensic Section'))))
+            self.anomaly_table.setItem(row, 3, QTableWidgetItem(severity))
+            self.anomaly_table.setItem(row, 4, QTableWidgetItem(f"{score:.3f}"))
+            self.anomaly_table.setItem(row, 5, QTableWidgetItem(str(anomaly.get('cluster', 'deterministic'))))
+            self.anomaly_table.setItem(row, 6, QTableWidgetItem(evidence_text if evidence_text else str(anomaly.get('reason', '-'))))
+
+        self.anomaly_summary.setText(
+            "\n".join([
+                "Anomaly findings loaded from deterministic forensic routing.",
+                f"Total anomalies: {len(anomalies)}",
+            ])
+        )
+        self._show_status("anomaly", f"✅ Loaded {len(anomalies)} routed anomalies")
+
+    def apply_ueba_profiles(self, profiles: List[Dict[str, Any]]) -> None:
+        """Populate UEBA tab from routed forensic profiles."""
+        self.risk_table.setRowCount(0)
+        self.alerts_table.setRowCount(0)
+        self.overview_user_table.setRowCount(0)
+
+        for profile in profiles:
+            row = self.risk_table.rowCount()
+            self.risk_table.insertRow(row)
+            user_id = str(profile.get('user') or profile.get('user_id') or 'Unknown')
+            risk_score = float(profile.get('risk_score') or 0.0)
+            alert_count = int(profile.get('event_count') or profile.get('alert_count') or 0)
+
+            self.risk_table.setItem(row, 0, QTableWidgetItem(user_id))
+            risk_item = QTableWidgetItem(f"{risk_score:.2f}")
+            if risk_score >= 70:
+                risk_item.setBackground(QColor(255, 100, 100))
+            elif risk_score >= 40:
+                risk_item.setBackground(QColor(255, 200, 100))
+            self.risk_table.setItem(row, 1, risk_item)
+            self.risk_table.setItem(row, 2, QTableWidgetItem(str(alert_count)))
+
+            ov_row = self.overview_user_table.rowCount()
+            self.overview_user_table.insertRow(ov_row)
+            self.overview_user_table.setItem(ov_row, 0, QTableWidgetItem(user_id))
+            self.overview_user_table.setItem(ov_row, 1, QTableWidgetItem(f"{risk_score:.2f}"))
+            self.overview_user_table.setItem(ov_row, 2, QTableWidgetItem(str(alert_count)))
+
+            if risk_score >= 60:
+                severity = 'HIGH'
+            elif risk_score >= 30:
+                severity = 'MEDIUM'
+            else:
+                severity = 'LOW'
+
+            alert_row = self.alerts_table.rowCount()
+            self.alerts_table.insertRow(alert_row)
+            self.alerts_table.setItem(alert_row, 0, QTableWidgetItem('UEBA Profile'))
+            self.alerts_table.setItem(alert_row, 1, QTableWidgetItem(user_id))
+            self.alerts_table.setItem(
+                alert_row,
+                2,
+                QTableWidgetItem(f"Observed {alert_count} events across sources: {', '.join(profile.get('sources', []))}")
+            )
+            self.alerts_table.setItem(alert_row, 3, QTableWidgetItem(severity))
+
+        self._show_status("ueba", f"✅ Loaded {len(profiles)} routed profiles")
+
+    def apply_network_intrusion_events(self, events: List[Dict[str, Any]]) -> None:
+        """Populate Network Intrusion tab from routed forensic events."""
+        self.ni_table.setRowCount(0)
+
+        anomalies = 0
+        for evt in events:
+            row = self.ni_table.rowCount()
+            self.ni_table.insertRow(row)
+
+            severity = str(evt.get('severity') or 'LOW').upper()
+            if severity in ('HIGH', 'CRITICAL'):
+                anomalies += 1
+
+            timestamp = (
+                evt.get('timestamp')
+                or evt.get('ts_utc')
+                or evt.get('ts_local')
+                or evt.get('time')
+                or evt.get('event_time')
+                or ''
+            )
+
+            self.ni_table.setItem(row, 0, QTableWidgetItem(str(timestamp)))
+            self.ni_table.setItem(row, 1, QTableWidgetItem(str(evt.get('event', 'network_event'))))
+            self.ni_table.setItem(row, 2, QTableWidgetItem(str(evt.get('source', 'memory'))))
+            self.ni_table.setItem(row, 3, QTableWidgetItem(severity))
+            self.ni_table.setItem(row, 4, QTableWidgetItem(f"{float(evt.get('score') or 0):.3f}"))
+            self.ni_table.setItem(row, 5, QTableWidgetItem(f"{float(evt.get('network_score') or 0):.2f}"))
+            self.ni_table.setItem(row, 6, QTableWidgetItem(f"{float(evt.get('artifact_score') or 0):.2f}"))
+            self.ni_table.setItem(row, 7, QTableWidgetItem(str(evt.get('flags', ''))))
+
+        total = len(events)
+        self.ni_summary.setText(
+            "\n".join([
+                "Network intrusion events loaded from deterministic forensic routing.",
+                f"Total events: {total}",
+                f"High/Critical: {anomalies}",
+            ])
+        )
+        self.ni_status.setText(f"✅ Loaded {total} routed network intrusion events")
+
+    def _fill_overview_table(self, table: QTableWidget, rows: List[tuple]) -> None:
+        """Internal helper to fill overview tables with (name, score, reason) tuples."""
+        table.setRowCount(0)
+        for name, score, reason in rows:
+            idx = table.rowCount()
+            table.insertRow(idx)
+            table.setItem(idx, 0, QTableWidgetItem(str(name)))
+            table.setItem(idx, 1, QTableWidgetItem(f"{float(score):.2f}"))
+            table.setItem(idx, 2, QTableWidgetItem(str(reason)))

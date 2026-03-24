@@ -34,6 +34,7 @@ Copyright (c) 2026 FEPD Development Team
 """
 
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -664,7 +665,8 @@ class ImageIngestTab(QWidget):
                 main = self.window()
                 vfs = getattr(main, "vfs", None)
             if vfs is None:
-                logger.warning("VFS not available — dashboard skipped")
+                logger.warning("VFS not available — showing minimal dashboard")
+                self._show_minimal_dashboard(evidence)
                 return
             summary = EvidenceSummaryService(vfs).generate(
                 image_name=evidence.name,
@@ -677,6 +679,32 @@ class ImageIngestTab(QWidget):
             self.show_evidence_dashboard(summary, alerts)
         except Exception as exc:
             logger.error("Dashboard generation failed: %s", exc)
+
+    def _show_minimal_dashboard(self, evidence: EvidenceImage) -> None:
+        """Render a lightweight dashboard when VFS-backed analytics are unavailable."""
+        self._ev_labels["image_name"].setText(evidence.name or "—")
+        self._ev_labels["image_size"].setText(evidence.size_display or "—")
+        self._ev_labels["filesystem"].setText(getattr(evidence, "filesystem", "") or "—")
+        self._ev_labels["partitions"].setText(str(len(getattr(evidence, "partitions", []) or [])))
+        self._ev_labels["mount_points"].setText(
+            ", ".join(getattr(evidence, "veos_drives", []) or []) or "—"
+        )
+        sha = evidence.sha256 or "—"
+        self._ev_labels["sha256"].setText(sha[:16] + "…" if len(sha) > 16 else sha)
+        self._ev_labels["sha256"].setToolTip(sha)
+
+        # Reset non-VFS sections to explicit placeholders.
+        self.tbl_users.setRowCount(0)
+        self.tbl_categories.setRowCount(0)
+        self.tbl_folders.setRowCount(0)
+        self.tbl_active.setRowCount(0)
+        self.lbl_disk_usage.setText("")
+        self.lbl_alerts.setText(
+            '<span style="color:#ff9800;">⚠️ Detailed analytics will appear after VFS indexing completes.</span>'
+        )
+
+        self.dashboard_frame.setVisible(True)
+        self._dashboard_scroll.setVisible(True)
 
     # ------------------------------------------------------------------
     # Dashboard style helpers
@@ -968,7 +996,9 @@ class ImageIngestTab(QWidget):
             f"Verified: {'Yes' if evidence.hash_verified else 'N/A'}\n"
             f"Partitions: {len(partitions)}\n"
             f"VEOS Drives: {', '.join(evidence.veos_drives)}\n"
-            f"Time: {result.elapsed:.1f}s",
+            f"Time: {result.elapsed:.1f}s\n"
+            f"Detections: {result.forensic_detection_summary.get('detections', 0)}\n"
+            f"Detection Output: {result.forensic_detection_output or 'N/A'}",
         )
 
         # Batch continuation
@@ -1110,10 +1140,20 @@ class ImageIngestTab(QWidget):
 
     def set_case(self, case_info: Dict[str, Any]) -> None:
         """Called when a case is opened / switched."""
-        case_path = Path(case_info.get("path", ""))
-        self.evidence_manager = EvidenceManager(case_path)
+        raw_case_path = str(case_info.get("path", "") or "").strip()
+        case_path = Path(raw_case_path) if raw_case_path else Path()
+        if not raw_case_path:
+            existing = getattr(self.case_manager, "case_path", None)
+            if existing:
+                case_path = Path(existing)
+        if case_path:
+            # Keep internal case manager in sync with main window case state.
+            self.case_manager.current_case = case_info
+            self.case_manager.case_path = case_path
+        self.evidence_manager = EvidenceManager(case_path if case_path else Path())
         self.evidence_manager.load_from_db()
         self._rebuild_tables()
+        self._update_ingest_context_status()
 
     def _rebuild_tables(self) -> None:
         """Rebuild UI tables from the evidence manager."""
@@ -1121,12 +1161,114 @@ class ImageIngestTab(QWidget):
         self.tbl_partitions.setRowCount(0)
         for img in self.evidence_manager.images:
             self._add_evidence_row(img)
+
         # Show partitions for first image
         if self.evidence_manager.images:
             first = self.evidence_manager.images[0]
             parts = self.evidence_manager.get_partitions(first.evidence_id)
             self._populate_partition_table(parts)
             self.filesystem_ready.emit(self.evidence_manager.is_ready)
+        else:
+            if not self._load_evidence_from_case_metadata():
+                self._set_partition_placeholder(
+                    "No evidence loaded for this case yet. Use 'Add Disk Image' or 'Add Memory Dump' to begin."
+                )
+
+    def _load_evidence_from_case_metadata(self) -> bool:
+        """Fallback: populate evidence table from case.json when DB evidence tables are absent."""
+        current_case = getattr(self.case_manager, "current_case", None) or {}
+        case_path = Path(current_case.get("path", ""))
+        if not case_path and getattr(self.case_manager, "case_path", None):
+            case_path = Path(getattr(self.case_manager, "case_path"))
+        if not case_path:
+            return False
+
+        case_json = case_path / "case.json"
+        if not case_json.exists():
+            return False
+
+        try:
+            payload = json.loads(case_json.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Could not read case metadata for ingest fallback: %s", exc)
+            return False
+
+        ev_meta = payload.get("evidence_image") if isinstance(payload, dict) else None
+        if not isinstance(ev_meta, dict):
+            ev_list = payload.get("evidence_images") if isinstance(payload.get("evidence_images"), list) else []
+            if ev_list and isinstance(ev_list[0], dict):
+                ev_meta = ev_list[0]
+            elif isinstance(payload.get("evidence"), dict):
+                ev_meta = payload.get("evidence")
+        if not isinstance(ev_meta, dict):
+            return False
+
+        image_path = str(ev_meta.get("path") or ev_meta.get("image_path") or "").strip()
+        image_name = str(ev_meta.get("filename") or ev_meta.get("name") or "").strip()
+        if not image_path and not image_name:
+            return False
+
+        if not image_path and image_name:
+            image_path = str(case_path / image_name)
+        if not image_name and image_path:
+            image_name = Path(image_path).name
+
+        ext = Path(image_path).suffix.lower()
+        image_format = ImageFormat.from_extension(ext)
+        image_type = (
+            ImageType.MEMORY
+            if ext in SUPPORTED_MEMORY_EXTENSIONS
+            else ImageType.DISK
+        )
+        sha256 = str(ev_meta.get("sha256_hash") or ev_meta.get("sha256") or "").strip()
+        size_bytes = ev_meta.get("size_bytes") or ev_meta.get("size")
+        if size_bytes is None:
+            size_bytes = Path(image_path).stat().st_size if Path(image_path).exists() else 0
+
+        evidence_id = hashlib.md5(image_path.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        ev = EvidenceImage(
+            evidence_id=evidence_id,
+            name=image_name,
+            path=image_path,
+            format=image_format,
+            image_type=image_type,
+            size=int(size_bytes or 0),
+            sha256=sha256,
+            hash_verified=bool(sha256),
+            status=ImageStatus.LOADED,
+            operator=str(payload.get("investigator") or ""),
+            ingested_at=str(payload.get("last_modified") or payload.get("created_date") or ""),
+        )
+
+        self.evidence_manager.register(ev, [])
+        self._add_evidence_row(ev)
+        self._set_partition_placeholder(
+            "Evidence loaded from case metadata. Partition details will appear after full ingest indexing."
+        )
+        return True
+
+    def _set_partition_placeholder(self, message: str) -> None:
+        """Show a readable placeholder row when partition viewer has no data."""
+        self.tbl_partitions.setRowCount(1)
+        self.tbl_partitions.setColumnCount(len(PARTITION_COLUMNS))
+        self.tbl_partitions.setSpan(0, 0, 1, len(PARTITION_COLUMNS))
+        self.tbl_partitions.setItem(0, 0, QTableWidgetItem(message))
+
+    def _update_ingest_context_status(self) -> None:
+        """Show clear case/evidence context so empty tables are never ambiguous."""
+        current_case = getattr(self.case_manager, "current_case", None) or {}
+        case_id = str(current_case.get("case_id") or current_case.get("id") or "Unknown")
+        evidence_count = len(self.evidence_manager.images)
+
+        if evidence_count > 0:
+            self.lbl_status.setText(
+                f"Case {case_id}: loaded {evidence_count} evidence item(s). Select a row to inspect partitions."
+            )
+            return
+
+        self.lbl_status.setText(
+            f"Case {case_id}: no evidence ingested yet. Add Disk Image or Add Memory Dump to populate this table."
+        )
 
     # ------------------------------------------------------------------
     # UI helpers

@@ -53,7 +53,7 @@ class ImageSelectionDialog(QDialog):
         ('AccessData Evidence', '*.ad1'),
         
         # Memory Dumps
-        ('Memory Dump', '*.mem *.dmp *.dump *.memory *.vmem'),
+        ('Memory Dump', '*.mem *.dmp *.dump *.memory *.vmem *.mddramimage'),
         ('Windows Hibernation', '*.hiberfil'),
         ('Core Dump', '*.core'),
         

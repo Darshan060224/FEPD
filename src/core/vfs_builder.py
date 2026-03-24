@@ -304,7 +304,7 @@ class VFSBuilder:
             return ImageType.DMG
         
         # Memory Formats
-        elif suffix in ('.mem', '.dmp', '.dump', '.memory'):
+        elif suffix in ('.mem', '.dmp', '.dump', '.memory', '.mddramimage'):
             return ImageType.MEMORY
         elif suffix in ('.vmem', '.vmsn'):
             return ImageType.VMEM

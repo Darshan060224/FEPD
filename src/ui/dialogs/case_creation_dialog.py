@@ -61,7 +61,12 @@ class HashCalculationThread(QThread):
                 self.case_name,
                 self.investigator,
                 primary_path,
-                precomputed_hash=precomputed_hash
+                precomputed_hash=precomputed_hash,
+                memory_dump_path=(
+                    str(self.evidence_obj.memory_dump_path)
+                    if self.evidence_obj and self.evidence_obj.memory_dump_path
+                    else None
+                ),
             )
             
             self.progress.emit(90, "Finalizing case metadata...")
@@ -320,10 +325,10 @@ class CaseCreationDialog(QDialog):
             # Multi-part mode: allow multiple file selection
             file_paths, _ = QFileDialog.getOpenFileNames(
                 self,
-                "Select All Evidence Parts (E01, E02, ...)",
+                "Select Evidence Parts (E01/L01/001...) and optional Memory Dump",
                 "",
                 "Forensic Images (*.E01 *.E02 *.E03 *.E04 *.E05 *.E06 *.E07 *.E08 *.E09 "
-                "*.e01 *.e02 *.e03 *.L01 *.L02 *.L03 *.001 *.002 *.003);;All Files (*.*)"
+                "*.e01 *.e02 *.e03 *.L01 *.L02 *.L03 *.001 *.002 *.003 *.mem *.dmp *.mddramimage);;All Files (*.*)"
             )
             
             if file_paths:
@@ -336,7 +341,7 @@ class CaseCreationDialog(QDialog):
                 self,
                 "Select Evidence File",
                 "",
-                "Evidence Files (*.img *.dd *.raw *.mem *.dmp *.aff *.log *.zip *.001);;All Files (*.*)"
+                "Evidence Files (*.img *.dd *.raw *.mem *.dmp *.mddramimage *.aff *.log *.zip *.001);;All Files (*.*)"
             )
             
             if file_path:
@@ -482,6 +487,19 @@ class CaseCreationDialog(QDialog):
                         "Evidence may have been moved or deleted."
                     )
                     return
+
+            # Optional memory dump in mixed disk+memory workflow
+            if self.evidence_object.memory_dump_path:
+                try:
+                    self.evidence_object.memory_dump_path.stat()
+                except Exception as e:
+                    QMessageBox.critical(
+                        self,
+                        "Evidence Access Error",
+                        f"Cannot access memory dump {self.evidence_object.memory_dump_path.name}:\n{e}\n\n"
+                        "Memory evidence may have been moved or deleted."
+                    )
+                    return
         elif self.evidence_object.single_path:
             # Single file evidence
             try:
@@ -585,7 +603,7 @@ class CaseCreationDialog(QDialog):
             logger.info(f"Registered evidence {primary_hash[:16]}... in global registry")
             
             # AUDIT: Log case creation
-            investigator = case_metadata.get('investigator', 'unknown')
+            investigator = case_metadata.get('investigator', 'N/A')
             self.audit_logger.log_case_created(
                 case_id=case_metadata['case_id'],
                 evidence_hash=primary_hash,
@@ -600,6 +618,7 @@ class CaseCreationDialog(QDialog):
                     f"Evidence Type: Multi-Part Forensic Image\n"
                     f"Base Name: {self.evidence_object.base_name}\n"
                     f"Total Parts: {self.evidence_object.total_parts}\n"
+                    f"Memory Dump: {self.evidence_object.memory_dump_path.name if self.evidence_object.memory_dump_path else 'Not provided'}\n"
                     f"Primary Hash: {case_metadata['evidence_image']['sha256_hash'][:16]}..."
                 )
             else:

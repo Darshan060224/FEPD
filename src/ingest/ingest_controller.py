@@ -35,6 +35,12 @@ from .hash_verifier import HashVerifier, ProgressCallback
 from .partition_scanner import PartitionScanner
 from .filesystem_builder import FilesystemBuilder, VEOSDriveInfo
 
+try:
+    from ..modules.forensic_detection_pipeline import run_forensic_detection_pipeline
+    FORENSIC_DETECTION_AVAILABLE = True
+except Exception:
+    FORENSIC_DETECTION_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +68,9 @@ class IngestResult:
         self.drives: List[VEOSDriveInfo] = []
         self.elapsed: float = 0.0
         self.error: str = ""
+        self.forensic_detection_output: str = ""
+        self.forensic_detection_summary: Dict[str, Any] = {}
+        self.forensic_detection_error: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -71,6 +80,9 @@ class IngestResult:
             "drives": [d.to_dict() for d in self.drives],
             "elapsed": self.elapsed,
             "error": self.error,
+            "forensic_detection_output": self.forensic_detection_output,
+            "forensic_detection_summary": self.forensic_detection_summary,
+            "forensic_detection_error": self.forensic_detection_error,
         }
 
 
@@ -94,9 +106,11 @@ class IngestController:
         self,
         case_path: Optional[Path] = None,
         operator: str = "",
+        auto_run_forensic_detection: bool = True,
     ) -> None:
         self.case_path = case_path
         self.operator = operator or os.getenv("USERNAME", os.getenv("USER", "unknown"))
+        self.auto_run_forensic_detection = auto_run_forensic_detection
 
         # Sub-modules
         self._loader = ImageLoader()
@@ -173,6 +187,11 @@ class IngestController:
             # ── Step 6: Persist metadata ──
             self._emit(on_progress, 90, "Saving evidence metadata…")
             self._persist_metadata(evidence, partitions, drives)
+
+            # ── Step 7: Forensic detection pipeline ──
+            if self.auto_run_forensic_detection and FORENSIC_DETECTION_AVAILABLE:
+                self._emit(on_progress, 93, "Running forensic detection pipeline…")
+                self._run_forensic_detection(result, evidence, on_progress)
 
             # ── Done ──
             evidence.status = ImageStatus.LOADED
@@ -309,6 +328,137 @@ class IngestController:
         conn.commit()
         conn.close()
         logger.debug("Metadata persisted to %s", case_db)
+
+    def _run_forensic_detection(
+        self,
+        result: IngestResult,
+        evidence: EvidenceImage,
+        on_progress: Optional[ProgressCallback],
+    ) -> None:
+        """Run post-ingestion forensic detection without failing ingestion on errors."""
+        if not self.case_path:
+            return
+
+        if not FORENSIC_DETECTION_AVAILABLE:
+            result.forensic_detection_error = "forensic_detection_pipeline_unavailable"
+            return
+
+        try:
+            output_dir = self.case_path / "forensic_detection" / evidence.evidence_id
+            memory_dump_path = self._resolve_case_memory_dump_path()
+            pipeline_result = run_forensic_detection_pipeline(
+                image_path=str(evidence.path),
+                output_dir=str(output_dir),
+                memory_dump=memory_dump_path,
+                suspicious_ips=[],
+            )
+
+            result.forensic_detection_output = str(output_dir / "forensic_detection_results.json")
+            result.forensic_detection_summary = pipeline_result.get("summary", {})
+
+            self._persist_forensic_detection_run(
+                evidence_id=evidence.evidence_id,
+                output_path=result.forensic_detection_output,
+                summary=result.forensic_detection_summary,
+            )
+            self._emit(on_progress, 98, "Forensic detection complete")
+
+        except Exception as exc:
+            result.forensic_detection_error = str(exc)
+            logger.warning("Forensic detection pipeline failed: %s", exc, exc_info=True)
+
+    def _resolve_case_memory_dump_path(self) -> Optional[str]:
+        """Resolve optional memory dump path from case.json metadata or evidence DB."""
+        if not self.case_path:
+            return None
+
+        # 1) case.json memory_dump.path
+        case_json = self.case_path / "case.json"
+        if case_json.exists():
+            try:
+                data = json.loads(case_json.read_text(encoding="utf-8"))
+                memory_info = data.get("memory_dump", {}) if isinstance(data, dict) else {}
+                raw_path = (memory_info.get("path") or "").strip() if isinstance(memory_info, dict) else ""
+                if raw_path:
+                    memory_path = Path(raw_path)
+                    if memory_path.exists() and memory_path.is_file():
+                        return str(memory_path)
+                    logger.warning("Case memory dump path not found on disk: %s", raw_path)
+            except Exception as exc:
+                logger.warning("Failed to parse case.json memory dump path: %s", exc)
+
+        # 2) evidence table fallback (supports memory added through ingest UI)
+        case_db = self.case_path / "case.db"
+        if not case_db.exists():
+            return None
+
+        try:
+            conn = sqlite3.connect(str(case_db))
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT source_path
+                FROM evidence
+                WHERE LOWER(image_type) = 'memory'
+                   OR UPPER(format) IN ('MEM', 'VMEM', 'MDDRAM')
+                ORDER BY ingestion_date DESC
+                """
+            )
+            rows = cur.fetchall()
+            conn.close()
+
+            for row in rows:
+                raw = str(row[0] or "").strip()
+                if not raw:
+                    continue
+                p = Path(raw)
+                if p.exists() and p.is_file():
+                    return str(p)
+
+            return None
+        except Exception as exc:
+            logger.warning("Failed to resolve memory dump from case DB: %s", exc)
+            return None
+
+    def _persist_forensic_detection_run(
+        self,
+        evidence_id: str,
+        output_path: str,
+        summary: Dict[str, Any],
+    ) -> None:
+        """Persist forensic detection run metadata to the case database."""
+        if not self.case_path:
+            return
+
+        case_db = self.case_path / "case.db"
+        conn = sqlite3.connect(str(case_db))
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS forensic_detection_runs (
+                evidence_id    TEXT PRIMARY KEY,
+                output_path    TEXT,
+                summary_json   TEXT,
+                completed_at   TEXT
+            )
+        """)
+
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO forensic_detection_runs
+                (evidence_id, output_path, summary_json, completed_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                evidence_id,
+                output_path,
+                json.dumps(summary),
+                datetime.utcnow().isoformat() + "Z",
+            ),
+        )
+
+        conn.commit()
+        conn.close()
 
     # ------------------------------------------------------------------
     # Progress helpers

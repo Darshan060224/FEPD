@@ -85,6 +85,7 @@ class EvidenceObject:
     base_name: Optional[str] = None
     total_parts: int = 0
     total_size_bytes: int = 0
+    memory_dump_path: Optional[Path] = None
     
     # Validation
     is_complete: bool = False
@@ -141,6 +142,7 @@ class EvidenceObject:
             'base_name': self.base_name,
             'total_parts': self.total_parts,
             'total_size_bytes': self.total_size_bytes,
+            'memory_dump_path': str(self.memory_dump_path) if self.memory_dump_path else None,
             'is_complete': self.is_complete,
             'missing_parts': self.missing_parts,
             'integrity_verified': self.integrity_verified
@@ -180,6 +182,7 @@ class EvidenceValidator:
         
         # Memory Dump Formats
         '.mem', '.dmp', '.dump', '.memory',
+        '.mddramimage',     # MDD RAM Image
         '.hiberfil', '.pagefile',
         '.crash', '.core',  # Linux/macOS crash dumps
         '.vmem', '.vmsn',   # VMware memory
@@ -237,13 +240,15 @@ class EvidenceValidator:
         '.l01',             # EnCase Logical
         '.lef',             # Logical Evidence File
     }
+
+    MEMORY_EXTENSIONS = {'.mem', '.dmp', '.mddramimage', '.vmem', '.dump', '.memory'}
     
     # Multi-part naming patterns - Extended support
     MULTIPART_PATTERNS = {
-        'E01': re.compile(r'^(.+)\.E(\d{2})$', re.IGNORECASE),  # LoneWolf.E01, LoneWolf.E02
-        'L01': re.compile(r'^(.+)\.L(\d{2})$', re.IGNORECASE),  # Evidence.L01, Evidence.L02
-        'Ex01': re.compile(r'^(.+)\.Ex(\d{2})$', re.IGNORECASE),  # Extended E01 format
-        'S01': re.compile(r'^(.+)\.S(\d{2})$', re.IGNORECASE),  # SMART format
+        'E01': re.compile(r'^(.+)\.E(\d{2,3})$', re.IGNORECASE),  # LoneWolf.E01, LoneWolf.E002
+        'L01': re.compile(r'^(.+)\.L(\d{2,3})$', re.IGNORECASE),  # Evidence.L01, Evidence.L002
+        'Ex01': re.compile(r'^(.+)\.Ex(\d{2,3})$', re.IGNORECASE),  # Extended E01 format
+        'S01': re.compile(r'^(.+)\.S(\d{2,3})$', re.IGNORECASE),  # SMART format
         '001': re.compile(r'^(.+)\.(\d{3})$'),                  # Image.001, Image.002 (split raw)
         'part': re.compile(r'^(.+)\.part(\d+)$', re.IGNORECASE),  # archive.part1, archive.part2
         'z01': re.compile(r'^(.+)\.z(\d{2})$', re.IGNORECASE),   # Split ZIP: file.z01, file.z02
@@ -266,6 +271,7 @@ class EvidenceValidator:
         '.qcow2': 'QEMU Copy-On-Write Disk',
         '.mem': 'Memory Dump',
         '.dmp': 'Windows Memory Dump',
+        '.mddramimage': 'MDD RAM Image (Physical Memory)',
         '.pcap': 'Network Packet Capture',
         '.pcapng': 'Network Packet Capture (Next Gen)',
         '.evtx': 'Windows Event Log',
@@ -403,7 +409,9 @@ class EvidenceValidator:
                     
                     grouped[sequence] = file_path
             
-            if grouped and len(grouped) > 1:  # At least 2 parts
+            # Accept a single valid starter segment (E01/L01/001) because
+            # some evidence sets are one-part and memory may be selected alongside it.
+            if grouped:
                 return base_name, pattern_name, grouped
         
         return None
@@ -468,9 +476,26 @@ class EvidenceValidator:
         """
         if not file_paths:
             return False, None, "No files provided"
+
+        # Extract optional memory dump (supports E01/L01 + memory in the same selection).
+        memory_files = [p for p in file_paths if p.suffix.lower() in self.MEMORY_EXTENSIONS]
+        if len(memory_files) > 1:
+            return False, None, "Only one memory dump is allowed per evidence set in this workflow."
+
+        if memory_files:
+            is_valid_mem, mem_error = self.validate_single_file(memory_files[0])
+            if not is_valid_mem:
+                return False, None, f"Invalid memory dump: {mem_error}"
+
+        disk_candidate_files = [p for p in file_paths if p not in memory_files]
+        if not disk_candidate_files:
+            return False, None, "No disk evidence parts found. Select E01/L01/numbered parts plus optional .mem/.dmp."
+
+        # If investigator selects only first disk segment, auto-discover sibling disk parts.
+        disk_candidate_files = self._expand_multipart_candidates(disk_candidate_files)
         
         # Detect naming pattern
-        pattern_result = self.detect_multipart_pattern(file_paths)
+        pattern_result = self.detect_multipart_pattern(disk_candidate_files)
         
         if not pattern_result:
             return False, None, (
@@ -553,6 +578,7 @@ class EvidenceValidator:
             parts=segments,
             total_parts=len(segments),
             total_size_bytes=total_size,
+            memory_dump_path=memory_files[0] if memory_files else None,
             is_complete=is_complete,
             missing_parts=missing,
             integrity_verified=True,  # Set to True after hash verification
@@ -565,6 +591,54 @@ class EvidenceValidator:
         
         self.logger.info(f"✓ Validation PASSED: {base_name} ({len(segments)} parts, {total_size / (1024**3):.2f} GB)")
         return True, evidence_obj, ""
+
+    def _expand_multipart_candidates(self, file_paths: List[Path]) -> List[Path]:
+        """
+        Expand candidate list by discovering sibling segments in the same directory.
+
+        This handles common UX where examiner selects only BaseName.E01 or BaseName.001.
+        """
+        if not file_paths:
+            return file_paths
+
+        unique_paths = {Path(p) for p in file_paths}
+
+        # Only auto-expand when one file is selected to avoid mixing unrelated selections.
+        if len(unique_paths) != 1:
+            return sorted(unique_paths)
+
+        seed = next(iter(unique_paths))
+        parent = seed.parent
+
+        matched_pattern = None
+        matched_base = None
+        for pattern_name, pattern_regex in self.MULTIPART_PATTERNS.items():
+            match = pattern_regex.match(seed.name)
+            if match:
+                matched_pattern = pattern_name
+                matched_base = match.group(1)
+                break
+
+        if not matched_pattern or not matched_base:
+            return sorted(unique_paths)
+
+        pattern_regex = self.MULTIPART_PATTERNS[matched_pattern]
+        discovered = set(unique_paths)
+
+        try:
+            for candidate in parent.iterdir():
+                if not candidate.is_file():
+                    continue
+                m = pattern_regex.match(candidate.name)
+                if not m:
+                    continue
+                if m.group(1) != matched_base:
+                    continue
+                discovered.add(candidate)
+        except Exception as exc:
+            self.logger.debug("Multipart expansion skipped: %s", exc)
+
+        return sorted(discovered)
     
     def create_single_evidence_object(self, file_path: Path) -> EvidenceObject:
         """
@@ -579,7 +653,7 @@ class EvidenceValidator:
         # Determine format
         extension = file_path.suffix.lower()
         
-        if extension in ['.mem', '.dmp']:
+        if extension in ['.mem', '.dmp', '.mddramimage']:
             evidence_format = EvidenceFormat.MEMORY
         elif extension in ['.img', '.dd', '.raw']:
             evidence_format = EvidenceFormat.RAW
@@ -736,6 +810,7 @@ class EvidenceValidator:
                     f"  Base name: {evidence.base_name}\n"
                     f"  Parts: {ext}01 → {ext}{evidence.total_parts:02d}\n"
                     f"  Total size: {size_gb:.2f} GB\n"
+                    f"  Memory dump: {evidence.memory_dump_path.name if evidence.memory_dump_path else 'Not provided'}\n"
                     f"  Status: COMPLETE"
                 )
             else:

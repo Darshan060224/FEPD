@@ -29,6 +29,15 @@ from ..models.partition import Partition, FilesystemType, PartitionRole
 logger = logging.getLogger(__name__)
 
 
+def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    """Safely read an optional field from sqlite3.Row."""
+    try:
+        val = row[key]
+    except Exception:
+        return default
+    return default if val is None else val
+
+
 class EvidenceManager:
     """
     In-memory registry of evidence loaded into the current case.
@@ -136,21 +145,22 @@ class EvidenceManager:
             # Load evidence images
             cursor.execute("SELECT * FROM evidence")
             for row in cursor.fetchall():
+                source_path = _row_get(row, "source_path", "")
                 evidence = EvidenceImage(
                     evidence_id=row["evidence_id"],
-                    name=row.get("name", Path(row["source_path"]).name),
-                    path=row["source_path"],
-                    format=ImageFormat(row.get("format", "UNKNOWN")),
-                    image_type=ImageType(row.get("image_type", "disk")),
-                    size=row.get("size", 0),
-                    sha256=row.get("hash", ""),
-                    hash_verified=bool(row.get("hash_verified", 0)),
-                    operator=row.get("operator", ""),
-                    ingested_at=row.get("ingestion_date", ""),
-                    mount_handler=row.get("mount_handler", ""),
-                    veos_drives=json.loads(row.get("veos_drives", "[]")),
-                    segments=json.loads(row.get("segments", "[]")),
-                    status=ImageStatus(row.get("status", "Loaded")),
+                    name=_row_get(row, "name", Path(source_path).name),
+                    path=source_path,
+                    format=ImageFormat(_row_get(row, "format", "UNKNOWN")),
+                    image_type=ImageType(_row_get(row, "image_type", "disk")),
+                    size=_row_get(row, "size", 0),
+                    sha256=_row_get(row, "hash", ""),
+                    hash_verified=bool(_row_get(row, "hash_verified", 0)),
+                    operator=_row_get(row, "operator", ""),
+                    ingested_at=_row_get(row, "ingestion_date", ""),
+                    mount_handler=_row_get(row, "mount_handler", ""),
+                    veos_drives=json.loads(_row_get(row, "veos_drives", "[]")),
+                    segments=json.loads(_row_get(row, "segments", "[]")),
+                    status=ImageStatus(_row_get(row, "status", "Loaded")),
                 )
                 self._images[evidence.evidence_id] = evidence
 
@@ -160,12 +170,12 @@ class EvidenceManager:
                 p = Partition(
                     id=row["id"],
                     evidence_id=row["evidence_id"],
-                    filesystem=FilesystemType(row.get("filesystem", "Unknown")),
-                    size=row.get("size", 0),
-                    start_offset=row.get("start_offset", 0),
-                    mount_point=row.get("mount_point", ""),
-                    description=row.get("description", ""),
-                    role=PartitionRole(row.get("role", "Unknown")),
+                    filesystem=FilesystemType(_row_get(row, "filesystem", "Unknown")),
+                    size=_row_get(row, "size", 0),
+                    start_offset=_row_get(row, "start_offset", 0),
+                    mount_point=_row_get(row, "mount_point", ""),
+                    description=_row_get(row, "description", ""),
+                    role=PartitionRole(_row_get(row, "role", "Unknown")),
                 )
                 self._partitions.setdefault(p.evidence_id, []).append(p)
 

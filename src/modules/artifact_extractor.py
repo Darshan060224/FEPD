@@ -30,6 +30,7 @@ class ArtifactExtractor:
     # Default artifact locations in Windows
     ARTIFACT_PATHS = {
         'event_logs': [
+            '/Windows/System32/winevt/Logs/*.evtx',
             '/Windows/System32/winevt/Logs/Application.evtx',
             '/Windows/System32/winevt/Logs/Security.evtx',
             '/Windows/System32/winevt/Logs/System.evtx',
@@ -57,6 +58,10 @@ class ArtifactExtractor:
         ],
         'mft': [
             '/$MFT',
+        ],
+        'usn_journal': [
+            '/$Extend/$UsnJrnl',
+            '/$Extend/$UsnJrnl:$J',
         ],
     }
     
@@ -240,6 +245,15 @@ class ArtifactExtractor:
             partition_dir / "MFT",
             results,
             'mft'
+        )
+
+        # Extract USN Journal
+        self._extract_artifact_group(
+            fs_info,
+            self.ARTIFACT_PATHS['usn_journal'],
+            partition_dir / "USN",
+            results,
+            'usn_journal'
         )
         
         # Extract prefetch files

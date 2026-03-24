@@ -27,12 +27,21 @@ _COL_ICON = 0
 _COL_NAME = 1
 _COL_SIZE = 2
 _COL_TYPE = 3
-_COL_MODIFIED = 4
-_COL_HASH = 5
+_COL_CREATED = 4
+_COL_MODIFIED = 5
+_COL_ACCESSED = 6
+_COL_OWNER = 7
+_COL_EXT = 8
+_COL_FLAGS = 9
+_COL_HASH = 10
+_COL_SOURCE = 11
 
-_COLUMN_COUNT = 6
+_COLUMN_COUNT = 12
 
-_HEADERS = ["", "Name", "Size", "Type", "Date Modified", "SHA-256"]
+_HEADERS = [
+    "", "Name", "Size", "Type", "Created", "Modified", "Accessed",
+    "Owner", "Extension", "Flags", "SHA-256", "Source",
+]
 
 
 # ============================================================================
@@ -156,14 +165,26 @@ class FolderContentsModel(QAbstractTableModel):
                 return entry.display_size
             if col == _COL_TYPE:
                 return entry.display_type
+            if col == _COL_CREATED:
+                return entry.created.strftime("%Y-%m-%d %H:%M") if entry.created else ""
             if col == _COL_MODIFIED:
                 return entry.display_modified
+            if col == _COL_ACCESSED:
+                return entry.accessed.strftime("%Y-%m-%d %H:%M") if entry.accessed else ""
+            if col == _COL_OWNER:
+                return entry.metadata.get("owner", "") or ""
+            if col == _COL_EXT:
+                return entry.extension.upper() if entry.extension else ""
+            if col == _COL_FLAGS:
+                return self._get_flags(entry)
             if col == _COL_HASH:
                 # Show override, then entry hash, then "—"
                 h = self._hash_overrides.get(entry.path) or entry.sha256
                 if h:
                     return f"{h[:16]}…"
                 return "—"
+            if col == _COL_SOURCE:
+                return entry.evidence_id or ""
 
         # ----- ToolTip -----
         elif role == Qt.ItemDataRole.ToolTipRole:
@@ -180,6 +201,11 @@ class FolderContentsModel(QAbstractTableModel):
                 return QColor("#888888")
             if entry.is_suspicious:
                 return QColor("#FF6B6B")
+            if col == _COL_FLAGS:
+                flags_text = self._get_flags(entry)
+                if "⚠" in flags_text:
+                    return QColor("#FF9800")
+                return QColor("#888888")
             if col == _COL_HASH:
                 return QColor("#888888")
             return None
@@ -207,6 +233,29 @@ class FolderContentsModel(QAbstractTableModel):
         return base
 
     # ------------------------------------------------------------------
+    # Forensic flag helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_flags(entry) -> str:
+        """Generate forensic flag indicators for a file entry."""
+        flags = []
+        if entry.is_deleted:
+            flags.append("⚠ Deleted")
+        if entry.is_suspicious:
+            flags.append("⚠ Suspicious")
+        ext = entry.extension.lower() if entry.extension else ""
+        if ext in ("exe", "dll", "bat", "cmd", "ps1", "vbs", "scr", "com", "msi"):
+            flags.append("⚠ Executable")
+        # High entropy heuristic: large extension-less files or known packed extensions
+        ml_score = entry.metadata.get("ml_score")
+        if ml_score and isinstance(ml_score, (int, float)) and ml_score > 0.7:
+            flags.append("⚠ High risk")
+        if not entry.is_allocated and not entry.is_deleted:
+            flags.append("⚠ Carved")
+        return " | ".join(flags) if flags else ""
+
+    # ------------------------------------------------------------------
     # Sorting
     # ------------------------------------------------------------------
 
@@ -221,13 +270,25 @@ class FolderContentsModel(QAbstractTableModel):
             key = lambda e: (0 if e.is_directory else 1, e.size)
         elif column == _COL_TYPE:
             key = lambda e: (0 if e.is_directory else 1, e.display_type.lower())
+        elif column == _COL_CREATED:
+            key = lambda e: (0 if e.is_directory else 1, str(e.created or ""))
         elif column == _COL_MODIFIED:
             key = lambda e: (0 if e.is_directory else 1, e.modified or "")
+        elif column == _COL_ACCESSED:
+            key = lambda e: (0 if e.is_directory else 1, str(e.accessed or ""))
+        elif column == _COL_OWNER:
+            key = lambda e: (0 if e.is_directory else 1, (e.metadata.get("owner") or "").lower())
+        elif column == _COL_EXT:
+            key = lambda e: (0 if e.is_directory else 1, e.extension.lower())
+        elif column == _COL_FLAGS:
+            key = lambda e: (0 if e.is_directory else 1, self._get_flags(e))
         elif column == _COL_HASH:
             key = lambda e: (
                 0 if e.is_directory else 1,
                 self._hash_overrides.get(e.path, e.sha256 or ""),
             )
+        elif column == _COL_SOURCE:
+            key = lambda e: (0 if e.is_directory else 1, (e.evidence_id or "").lower())
         else:
             key = lambda e: e.sort_key
 

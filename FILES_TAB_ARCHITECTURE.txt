@@ -1,0 +1,211 @@
+```
+FEPD FILES TAB ARCHITECTURE
+═══════════════════════════════════════════════════════════════════════
+
+                    ┌─────────────────────────────────┐
+                    │   MAIN WINDOW (main_window.py)  │
+                    │   ┌───────────────────────────┐ │
+                    │   │ Tab Widget                │ │
+                    │   │ ┌─────┬─────┬───────────┐ │ │
+                    │   │ │Ingest│Files│Artifacts│ │ │
+                    │   │ └─────┴──┬──┴───────────┘ │ │
+                    │   └───────────┼───────────────┘ │
+                    └───────────────┼─────────────────┘
+                                    │
+                    ┌───────────────▼───────────────┐
+                    │   FILES TAB (files_tab.py)    │
+                    │   ┌─────────────────────────┐ │
+                    │   │  UI LAYER (PyQt6)       │ │
+                    │   ├─────────────────────────┤ │
+                    │   │ ┌─────────────────────┐ │ │
+                    │   │ │ Toolbar             │ │ │
+                    │   │ │ [←][→][↑] Breadcrumb│ │ │
+                    │   │ └─────────────────────┘ │ │
+                    │   │                         │ │
+                    │   │ ┌───┬──────────┬─────┐ │ │
+                    │   │ │   │          │     │ │ │
+                    │   │ │ T │  Center  │  D  │ │ │
+                    │   │ │ r │  Table   │  e  │ │ │
+                    │   │ │ e │          │  t  │ │ │
+                    │   │ │ e │  (List)  │  a  │ │ │
+                    │   │ │   │          │  i  │ │ │
+                    │   │ │ V │          │  l  │ │ │
+                    │   │ │ i │          │  s  │ │ │
+                    │   │ │ e │          │     │ │ │
+                    │   │ │ w │          │     │ │ │
+                    │   │ └───┴──────────┴─────┘ │ │
+                    │   │                         │ │
+                    │   │ ┌─────────────────────┐ │ │
+                    │   │ │ Status Bar          │ │ │
+                    │   │ │ [Stats] [Read-Only] │ │ │
+                    │   │ └─────────────────────┘ │ │
+                    │   └─────────────────────────┘ │
+                    └───────────────┬───────────────┘
+                                    │
+            ┌───────────────────────┼───────────────────────┐
+            │                       │                       │
+    ┌───────▼────────┐   ┌─────────▼──────────┐   ┌───────▼────────┐
+    │ FilesController│   │  File Viewers      │   │   Models       │
+    │ (Controller)   │   │  • TextViewer      │   │ • TreeModel    │
+    │ ┌────────────┐ │   │  • HexViewer       │   │ • TableModel   │
+    │ │FileNavigat.│ │   │  • ImageViewer     │   │ • FileEntry    │
+    │ │HashService │ │   │  • PDFViewer       │   │                │
+    │ │PreviewSvc  │ │   │  • VideoViewer     │   │                │
+    │ └────────────┘ │   └────────────────────┘   └────────────────┘
+    └────────┬───────┘
+             │
+    ┌────────▼──────────────────────────────────────────┐
+    │  VirtualFilesystem (virtual_fs.py)                │
+    │  ┌──────────────────────────────────────────────┐ │
+    │  │  SQLite Database (vfs.db)                    │ │
+    │  │  ┌──────────────────────────────────────────┐│ │
+    │  │  │ nodes                                    ││ │
+    │  │  │ ├─ id, path, name, type, size           ││ │
+    │  │  │ ├─ created, modified, accessed          ││ │
+    │  │  │ ├─ parent_path, is_directory            ││ │
+    │  │  │ └─ sha256, md5, metadata_json           ││ │
+    │  │  └──────────────────────────────────────────┘│ │
+    │  └──────────────────────────────────────────────┘ │
+    └────────┬──────────────────────────────────────────┘
+             │
+    ┌────────▼──────────────────────────────────────────┐
+    │  VEOS / EvidenceFS (Low-Level Forensic Layer)     │
+    │  ┌──────────────┬──────────────┬─────────────┐   │
+    │  │  pytsk3      │  pyewf       │  MFT Parser │   │
+    │  │  (TSK Core)  │  (E01 Files) │  (Deleted)  │   │
+    │  └──────────────┴──────────────┴─────────────┘   │
+    └───────────────────────────────────────────────────┘
+
+
+SIGNAL FLOW
+═══════════
+
+User Action → UI Widget → Controller → Navigator → VFS → EvidenceFS
+                  │            │            │
+                  ▼            ▼            ▼
+            CoC Logger   Hash Service  Preview Service
+
+
+DATA FLOW
+═════════
+
+Evidence Image (E01)
+       │
+       ├─→ pytsk3/pyewf → Parse Filesystem
+       │
+       ├─→ VFS Builder → Populate vfs.db
+       │
+       ├─→ FileNavigator → Load Directory
+       │
+       └─→ FilesTab → Display in UI
+
+
+NAVIGATION FLOW
+═══════════════
+
+1. User clicks folder in tree
+       │
+       ▼
+2. FilesTab._on_tree_clicked()
+       │
+       ▼
+3. FilesController.open_folder(path)
+       │
+       ▼
+4. FileNavigator.navigate_to(path)
+       ├─→ Update history (back/forward stacks)
+       ├─→ VFS.get_children(path)
+       └─→ Emit directory_loaded signal
+       │
+       ▼
+5. FilesTab._on_directory_loaded()
+       ├─→ Update center table (FolderContentsModel)
+       ├─→ Update breadcrumb
+       └─→ Update statistics
+
+
+FILE VIEWING FLOW
+═════════════════
+
+1. User double-clicks file
+       │
+       ▼
+2. FilesTab._on_contents_double_clicked()
+       │
+       ▼
+3. FilesController.get_viewer_type(entry)
+       ├─→ Detect file type by extension
+       └─→ Return viewer type ("text", "hex", "image", etc.)
+       │
+       ▼
+4. FilesTab._open_file_entry()
+       ├─→ Instantiate viewer (TextViewer, ImageViewer, etc.)
+       ├─→ Read file data via read_file_func()
+       └─→ viewer.load_file(path, data)
+       │
+       ▼
+5. Viewer displays in new window
+       └─→ Log to CoC: "FILE_VIEWED"
+
+
+WRITE-BLOCKING FLOW
+═══════════════════
+
+User attempts delete/rename/modify
+       │
+       ▼
+Keyboard Shortcut or Context Menu
+       │
+       ▼
+_block_write(self, action)
+       ├─→ Display warning dialog
+       ├─→ Log to CoC: "WRITE_BLOCKED"
+       └─→ Return False (action cancelled)
+
+
+TERMINAL SYNC FLOW
+══════════════════
+
+Files Tab → Terminal
+──────────────────
+1. User navigates to /C:/Users/Alice
+2. FilesTab emits path_changed("/C:/Users/Alice")
+3. Terminal receives signal
+4. Terminal.set_pwd("/C:/Users/Alice")
+
+Terminal → Files Tab
+──────────────────
+1. User types "cd /C:/Program Files"
+2. Terminal emits path_changed("/C:/Program Files")
+3. FilesTab.sync_to_terminal_path()
+4. FilesController.open_folder("/C:/Program Files")
+
+
+FORENSIC SAFETY GUARANTEES
+═══════════════════════════
+
+┌────────────────────────────────────────────────┐
+│ 🔒 READ-ONLY ENFORCEMENT                       │
+├────────────────────────────────────────────────┤
+│ • No write operations to evidence              │
+│ • All delete/rename/modify blocked at UI level │
+│ • Export creates copies, never modifies source │
+└────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────┐
+│ 📋 CHAIN OF CUSTODY LOGGING                    │
+├────────────────────────────────────────────────┤
+│ • Every navigation logged                      │
+│ • Every file access logged                     │
+│ • Every hash computation logged                │
+│ • Every export logged with timestamp           │
+└────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────┐
+│ 🛡️ INTEGRITY PROTECTION                        │
+├────────────────────────────────────────────────┤
+│ • Path sanitization (prevent traversal)        │
+│ • Hash verification (SHA-256/MD5)              │
+│ • Forensic metadata preservation               │
+└────────────────────────────────────────────────┘
+```

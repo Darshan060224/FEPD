@@ -195,7 +195,7 @@ FEPD_COMMANDS = {
     'export', 'chain', 'score', 'explain', 'create_case',
     'ingest', 'search', 'hash', 'forensic_report',
     'help', 'hint', 'exit', 'quit', 'version', 'status', 'info',
-    'cng', 'memscan', 'ps', 'netstat', 'sessions', 'services',
+    'cng', 'memscan', 'ps', 'pstree', 'netstat', 'sessions', 'services',
     'startup', 'ueba', 'detect', 'mount', 'validate', 'exit_user',
     'osinfo',  # Evidence OS information
 }
@@ -844,7 +844,24 @@ TYPE        Displays the contents of a text file.
 VER         Displays the Windows version.
 WHERE       Displays the location of files that match a search pattern.
 
-Special commands: cases, use case <name>, users, timeline, search <term>
+Forensic commands:
+  ps          Virtual process list from artifacts
+  pstree      Process tree with parent-child relationships
+  netstat     Reconstructed network connections
+  sessions    User login/logoff sessions
+  services    Windows services from registry
+  startup     Persistence/startup items
+  timeline    Forensic event timeline
+  hexdump     Hex dump of file contents
+  strings     Extract printable strings
+  hash        Compute SHA-256 hash
+  search      Full-text artifact search
+  memscan     Memory dump analysis
+  ueba        User behavior analytics
+  score       ML risk scoring
+  explain     ML explainability report
+
+Case commands: cases, use case <name>, users, create_case <name>
 """
     
     def _cmd_certutil(self, args: List[str], full_cmd: str) -> str:

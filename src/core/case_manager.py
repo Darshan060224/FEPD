@@ -62,7 +62,7 @@ class CaseManager:
             "name": case_metadata.get("case_name", case_id),
             "created": case_metadata.get("created_date", datetime.now().isoformat()),
             "path": str(self.base_cases_dir / case_id),
-            "investigator": case_metadata.get("investigator", "unknown"),
+            "investigator": case_metadata.get("investigator", "N/A"),
             "status": case_metadata.get("status", "open")
         }
         registry["last_updated"] = datetime.now().isoformat()
@@ -73,8 +73,15 @@ class CaseManager:
         
         logger.info(f"Updated shared case registry with case: {case_id}")
     
-    def create_case(self, case_id: str, case_name: str, investigator: str, 
-                   image_path: str, precomputed_hash: Optional[str] = None) -> Dict[str, Any]:
+    def create_case(
+        self,
+        case_id: str,
+        case_name: str,
+        investigator: str,
+        image_path: str,
+        precomputed_hash: Optional[str] = None,
+        memory_dump_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Create a new forensic case with proper folder structure and metadata.
         
@@ -85,6 +92,7 @@ class CaseManager:
             image_path: Path to the evidence image file (.E01, .dd, etc.)
             precomputed_hash: Optional pre-computed SHA-256 hash from evidence validator
                              (avoids double hashing - CRITICAL performance fix)
+            memory_dump_path: Optional memory dump path associated with this case
         
         Returns:
             Dictionary containing case metadata
@@ -149,6 +157,10 @@ class CaseManager:
                     "filename": image_filename,
                     "size_bytes": image_size,
                     "sha256_hash": image_hash
+                },
+                "memory_dump": {
+                    "path": str(Path(memory_dump_path).absolute()) if memory_dump_path else "",
+                    "filename": Path(memory_dump_path).name if memory_dump_path else "",
                 },
                 "status": "open",
                 "version": "1.0"
@@ -273,10 +285,10 @@ class CaseManager:
                         with open(case_json_path, 'r', encoding='utf-8') as f:
                             case_metadata = json.load(f)
                             cases.append({
-                                "case_id": case_metadata.get("case_id", "Unknown"),
-                                "case_name": case_metadata.get("case_name", "Unknown"),
-                                "investigator": case_metadata.get("investigator", "Unknown"),
-                                "created_date": case_metadata.get("created_date", "Unknown"),
+                                "case_id": case_metadata.get("case_id", case_dir.name),
+                                "case_name": case_metadata.get("case_name", case_dir.name),
+                                "investigator": case_metadata.get("investigator", "N/A"),
+                                "created_date": case_metadata.get("created_date", "N/A"),
                                 "path": str(case_dir)
                             })
                     except Exception as e:
@@ -346,8 +358,8 @@ class CaseManager:
     def close_case(self) -> None:
         """Close the current case."""
         if self.current_case:
-            case_id = self.current_case.get('case_id', 'Unknown')
-            investigator = self.current_case.get('investigator', 'unknown')
+            case_id = self.current_case.get('case_id', 'N/A')
+            investigator = self.current_case.get('investigator', 'N/A')
             logger.info(f"Closing case: {case_id}")
             
             # Log to blockchain-style chain of custody

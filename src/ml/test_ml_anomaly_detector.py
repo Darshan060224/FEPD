@@ -39,6 +39,7 @@ RESET = '\033[0m'
 
 class TestRunner:
     """Simple test runner with colorful output."""
+    __test__ = False
     
     def __init__(self):
         self.passed = 0

@@ -919,7 +919,7 @@ class CaseTab(QWidget):
         self.lbl_created.value_label.setText(self.current_case.get('created_at', '—'))
         
         # Status with color
-        status = self.current_case.get('status', 'UNKNOWN')
+        status = self.current_case.get('status', 'ACTIVE')
         status_widget = self.lbl_status.value_label
         status_widget.setText(status)
         

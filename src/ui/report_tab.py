@@ -15,6 +15,9 @@ Features:
 """
 
 import logging
+import json
+import csv
+import html
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -49,6 +52,7 @@ class ReportTab(QWidget):
         
         self._tagged_artifacts = []  # Artifacts marked for reporting
         self._case_metadata = {}
+        self._case_path: Optional[Path] = None
         
         self._init_ui()
     
@@ -421,6 +425,106 @@ class ReportTab(QWidget):
             self.tbl_evidence.setItem(row, 4, date_item)
         
         self._update_evidence_count()
+
+    def set_case_context(self, case_path: Path, case_metadata: Optional[Dict[str, Any]] = None):
+        """Bind report tab to active case and prefill metadata/evidence table."""
+        self._case_path = Path(case_path)
+        self._case_metadata = dict(case_metadata or {})
+
+        case_id = str(self._case_metadata.get('case_id') or case_path.name)
+        investigator = str(self._case_metadata.get('investigator') or '')
+        case_name = str(self._case_metadata.get('case_name') or '')
+
+        self.txt_case_number.setText(case_id)
+        self.txt_examiner_name.setText(investigator)
+        if not self.txt_case_summary.toPlainText().strip():
+            self.txt_case_summary.setPlainText(case_name)
+
+        # Preload artifacts from normalized store so report tab is never empty on case open.
+        artifacts: List[Dict[str, Any]] = []
+        try:
+            from src.services.unified_forensic_store import UnifiedForensicStore
+
+            store = UnifiedForensicStore(case_path)
+            store.rebuild_case_index()
+            rows = store.query_artifacts(limit=5000, offset=0)
+            for r in rows:
+                artifacts.append({
+                    'type': r.get('type', 'Unknown'),
+                    'name': r.get('name', 'Unknown'),
+                    'path': r.get('path', ''),
+                    'timestamp': r.get('timestamp', ''),
+                })
+        except Exception as exc:
+            self.logger.warning("Report tab case artifact preload failed: %s", exc)
+
+        self.load_tagged_artifacts(artifacts)
+        self._refresh_preview()
+
+    def _collect_selected_evidence_rows(self) -> List[Dict[str, str]]:
+        rows: List[Dict[str, str]] = []
+        for row in range(self.tbl_evidence.rowCount()):
+            chk_widget = self.tbl_evidence.cellWidget(row, 0)
+            include = True
+            if chk_widget:
+                chk = chk_widget.findChild(QCheckBox)
+                include = bool(chk and chk.isChecked())
+            if not include:
+                continue
+            rows.append({
+                'type': self.tbl_evidence.item(row, 1).text() if self.tbl_evidence.item(row, 1) else '',
+                'name': self.tbl_evidence.item(row, 2).text() if self.tbl_evidence.item(row, 2) else '',
+                'path': self.tbl_evidence.item(row, 3).text() if self.tbl_evidence.item(row, 3) else '',
+                'timestamp': self.tbl_evidence.item(row, 4).text() if self.tbl_evidence.item(row, 4) else '',
+            })
+        return rows
+
+    def _collect_case_overview(self) -> Dict[str, Any]:
+        overview: Dict[str, Any] = {
+            'total_files': 0,
+            'total_artifacts': 0,
+            'artifact_types': [],
+            'coc_entries': 0,
+            'latest_coc_action': '',
+        }
+        if not self._case_path:
+            return overview
+
+        try:
+            from src.services.unified_forensic_store import UnifiedForensicStore
+            store = UnifiedForensicStore(self._case_path)
+            stats = store.rebuild_case_index()
+            overview['total_files'] = int(stats.get('files', 0))
+            overview['total_artifacts'] = int(stats.get('artifacts', 0))
+
+            type_counts: Dict[str, int] = {}
+            for row in store.query_artifacts(limit=5000, offset=0):
+                t = str(row.get('type') or 'unknown')
+                type_counts[t] = type_counts.get(t, 0) + 1
+            overview['artifact_types'] = sorted(type_counts.items(), key=lambda kv: kv[1], reverse=True)[:15]
+        except Exception as exc:
+            self.logger.warning("Could not collect unified store overview for report: %s", exc)
+
+        coc_path = self._case_path / "chain_of_custody.log"
+        if coc_path.exists():
+            try:
+                entries = []
+                with open(coc_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entries.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+                overview['coc_entries'] = len(entries)
+                if entries:
+                    overview['latest_coc_action'] = str(entries[-1].get('action', ''))
+            except Exception as exc:
+                self.logger.warning("Could not parse chain_of_custody.log for report overview: %s", exc)
+
+        return overview
     
     def _select_all_evidence(self):
         """Select all evidence items."""
@@ -480,6 +584,28 @@ class ReportTab(QWidget):
     
     def _generate_preview_html(self, metadata: Dict[str, str]) -> str:
         """Generate HTML preview of report."""
+        selected = self._collect_selected_evidence_rows()
+        overview = self._collect_case_overview()
+
+        evidence_rows = ""
+        for row in selected[:200]:
+            evidence_rows += (
+                "<tr>"
+                f"<td>{html.escape(row.get('type', ''))}</td>"
+                f"<td>{html.escape(row.get('name', ''))}</td>"
+                f"<td>{html.escape(row.get('path', ''))}</td>"
+                f"<td>{html.escape(row.get('timestamp', ''))}</td>"
+                "</tr>"
+            )
+        if not evidence_rows:
+            evidence_rows = "<tr><td colspan='4'><i>No selected evidence rows.</i></td></tr>"
+
+        type_rows = ""
+        for t, c in overview.get('artifact_types', []):
+            type_rows += f"<li><b>{html.escape(str(t))}</b>: {int(c):,}</li>"
+        if not type_rows:
+            type_rows = "<li><i>No artifact type distribution available.</i></li>"
+
         html = f"""
         <html>
         <head>
@@ -493,6 +619,7 @@ class ReportTab(QWidget):
                 table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
                 th {{ background: #34495e; color: white; padding: 10px; text-align: left; }}
                 td {{ background: #3a3a3a; padding: 8px; border-bottom: 1px solid #555; }}
+                ul {{ margin-top: 6px; }}
             </style>
         </head>
         <body>
@@ -509,16 +636,30 @@ class ReportTab(QWidget):
             </div>
             
             <h2>Case Summary</h2>
-            <p>{metadata.get('summary', 'No summary provided.')}</p>
+                        <p>{html.escape(metadata.get('summary', 'No summary provided.'))}</p>
+
+                        <h2>Case Coverage Summary</h2>
+                        <div class="metadata">
+                                <div class="metadata-row"><span class="label">Total Indexed Files:</span> {int(overview.get('total_files', 0)):,}</div>
+                                <div class="metadata-row"><span class="label">Total Indexed Artifacts:</span> {int(overview.get('total_artifacts', 0)):,}</div>
+                                <div class="metadata-row"><span class="label">Chain-of-Custody Entries:</span> {int(overview.get('coc_entries', 0)):,}</div>
+                                <div class="metadata-row"><span class="label">Latest CoC Action:</span> {html.escape(str(overview.get('latest_coc_action', 'N/A')))}</div>
+                        </div>
+
+                        <h2>Artifact Type Distribution</h2>
+                        <ul>{type_rows}</ul>
             
             <h2>Evidence Items</h2>
-            <p><i>Evidence table will appear here in final report...</i></p>
+                        <table>
+                            <thead><tr><th>Type</th><th>Name</th><th>Path</th><th>Timestamp</th></tr></thead>
+                            <tbody>{evidence_rows}</tbody>
+                        </table>
             
             <h2>Chain of Custody</h2>
-            <p><i>Chain-of-custody log will appear here if included...</i></p>
+                        <p>{'Included in final report output.' if self.chk_coc.isChecked() else 'Excluded by option.'}</p>
             
             <h2>Findings and Conclusions</h2>
-            <p><i>Detailed findings will appear here in final report...</i></p>
+                        <p>This report was generated from indexed case content and investigator-selected evidence rows.</p>
         </body>
         </html>
         """
@@ -569,16 +710,49 @@ class ReportTab(QWidget):
         self.btn_generate.setEnabled(False)
         
         try:
-            # TODO: Actual report generation
-            # 1. Collect selected evidence
-            # 2. Load CoC log if selected
-            # 3. Generate report based on template
-            # 4. Export to selected format
-            # 5. Save to file
-            
-            for i in range(101):
-                self.progress_bar.setValue(i)
-                # Simulate work
+            metadata = {
+                'case_number': self.txt_case_number.text(),
+                'examiner': self.txt_examiner_name.text(),
+                'organization': self.txt_organization.text(),
+                'exam_start': self.date_exam_start.date().toString("yyyy-MM-dd"),
+                'exam_end': self.date_exam_end.date().toString("yyyy-MM-dd"),
+                'victim_suspect': self.txt_victim_suspect.text(),
+                'summary': self.txt_case_summary.toPlainText(),
+            }
+
+            report_html = self._generate_preview_html(metadata)
+            selected_rows = self._collect_selected_evidence_rows()
+            output = Path(self._save_location)
+
+            self.progress_bar.setValue(25)
+
+            suffix = output.suffix.lower()
+            if suffix == '.html':
+                output.write_text(report_html, encoding='utf-8')
+            elif suffix == '.csv':
+                with open(output, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=['case_number', 'examiner', 'type', 'name', 'path', 'timestamp'])
+                    writer.writeheader()
+                    for row in selected_rows:
+                        writer.writerow({
+                            'case_number': metadata['case_number'],
+                            'examiner': metadata['examiner'],
+                            'type': row.get('type', ''),
+                            'name': row.get('name', ''),
+                            'path': row.get('path', ''),
+                            'timestamp': row.get('timestamp', ''),
+                        })
+            else:
+                # Fallback export for PDF/DOCX selections without external converter dependencies.
+                fallback_html = output.with_suffix('.html')
+                fallback_html.write_text(report_html, encoding='utf-8')
+                output.write_text(
+                    f"Report content exported to HTML companion file: {fallback_html.name}\n"
+                    "Use the HTML file for complete formatted report content.",
+                    encoding='utf-8'
+                )
+
+            self.progress_bar.setValue(100)
             
             self.progress_bar.setVisible(False)
             self.btn_generate.setEnabled(True)

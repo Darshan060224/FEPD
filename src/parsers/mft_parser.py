@@ -42,14 +42,19 @@ class MFTParser:
         """
         self.logger = logger or logging.getLogger(__name__)
     
-    def parse_file(self, mft_path: Path, max_records: int = 100000, progress_callback: Optional[Callable[[int, int], None]] = None) -> List[Dict[str, Any]]:
+    def parse_file(
+        self,
+        mft_path: Path,
+        max_records: Optional[int] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> List[Dict[str, Any]]:
         """Alias for parse method to match pipeline interface."""
         return self.parse(mft_path, max_records, progress_callback)
     
     def parse(
         self, 
         mft_path: Path, 
-        max_records: int = 100000,
+        max_records: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> List[Dict[str, Any]]:
         """
@@ -57,7 +62,7 @@ class MFTParser:
         
         Args:
             mft_path: Path to $MFT file
-            max_records: Maximum number of records to parse (default 100k)
+            max_records: Maximum records to parse; None means parse full MFT
             progress_callback: Optional callback(current, total) for progress tracking
             
         Returns:
@@ -78,14 +83,15 @@ class MFTParser:
         
         try:
             file_size = mft_path.stat().st_size
-            total_records = min(file_size // self.MFT_RECORD_SIZE, max_records)
+            file_records = file_size // self.MFT_RECORD_SIZE
+            total_records = min(file_records, max_records) if max_records else file_records
             
             self.logger.info(f"Estimated MFT records: {total_records}")
             
             with open(mft_path, 'rb') as f:
                 record_count = 0
                 
-                while record_count < max_records:
+                while record_count < total_records:
                     data = f.read(self.MFT_RECORD_SIZE)
                     
                     if len(data) < self.MFT_RECORD_SIZE:

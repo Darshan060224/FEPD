@@ -280,6 +280,27 @@ class VisualizationWorker(QThread):
         """Cancel visualization generation."""
         self._cancelled = True
         self.logger.info(f"Visualization generation cancelled: {self.viz_type}")
+
+    def _ensure_datetime_column(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Return a copy of dataframe with normalized datetime column when possible."""
+        normalized = df.copy()
+
+        if 'datetime' in normalized.columns:
+            normalized['datetime'] = pd.to_datetime(normalized['datetime'], errors='coerce')
+        elif 'ts_local' in normalized.columns:
+            normalized['datetime'] = pd.to_datetime(normalized['ts_local'], errors='coerce')
+        elif 'ts_utc' in normalized.columns:
+            normalized['datetime'] = pd.to_datetime(normalized['ts_utc'], errors='coerce')
+        elif 'timestamp' in normalized.columns:
+            normalized['datetime'] = pd.to_datetime(normalized['timestamp'], errors='coerce')
+        else:
+            raise ValueError("No timestamp column found")
+
+        normalized = normalized.dropna(subset=['datetime'])
+        if normalized.empty:
+            raise ValueError("No valid timestamps found in events")
+
+        return normalized
     
     def _generate_heatmap(self):
         """Generate activity heatmap."""
@@ -290,13 +311,8 @@ class VisualizationWorker(QThread):
         import matplotlib.dates as mdates
         from datetime import datetime
         
-        # Convert timestamps to datetime if needed (using ISO8601 format for flexibility)
-        if 'ts_local' in self.events_df.columns:
-            self.events_df['datetime'] = pd.to_datetime(self.events_df['ts_local'], format='ISO8601')
-        elif 'ts_utc' in self.events_df.columns:
-            self.events_df['datetime'] = pd.to_datetime(self.events_df['ts_utc'], format='ISO8601')
-        else:
-            raise ValueError("No timestamp column found")
+        working_df = self.config.get('filtered_df', self.events_df)
+        self.events_df = self._ensure_datetime_column(working_df)
         
         # Check heatmap type
         heatmap_type = self.config.get('heatmap_type', 'Day/Hour')
@@ -569,19 +585,10 @@ class VisualizationWorker(QThread):
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
         
-        # Use non-GUI backend for thread safety
-        matplotlib.use('Agg')
-        
         # Create timeline visualization
         fig, ax = plt.subplots(figsize=(12, 6))
         
-        # Convert timestamps (using ISO8601 format for flexibility)
-        if 'ts_local' in self.events_df.columns:
-            self.events_df['datetime'] = pd.to_datetime(self.events_df['ts_local'], format='ISO8601')
-        elif 'ts_utc' in self.events_df.columns:
-            self.events_df['datetime'] = pd.to_datetime(self.events_df['ts_utc'], format='ISO8601')
-        else:
-            raise ValueError("No timestamp column found")
+        self.events_df = self._ensure_datetime_column(self.config.get('filtered_df', self.events_df))
         
         # Group by time bin and count events (use 'h' instead of deprecated 'H')
         time_bin = self.config.get('time_bin', '1h')  # Changed from '1H' to '1h'
@@ -1765,6 +1772,23 @@ class VisualizationsTab(QWidget):
         if time_range == "Entire Timeline" or df.empty:
             return df
         
+        if 'datetime' not in df.columns:
+            if 'ts_local' in df.columns:
+                df = df.copy()
+                df['datetime'] = pd.to_datetime(df['ts_local'], errors='coerce')
+            elif 'ts_utc' in df.columns:
+                df = df.copy()
+                df['datetime'] = pd.to_datetime(df['ts_utc'], errors='coerce')
+            elif 'timestamp' in df.columns:
+                df = df.copy()
+                df['datetime'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            else:
+                return df
+
+            df = df.dropna(subset=['datetime'])
+            if df.empty:
+                return df
+
         # Get current max datetime from data
         max_datetime = df['datetime'].max()
         
@@ -1818,6 +1842,15 @@ class VisualizationsTab(QWidget):
         elif viz_type == "connections":
             # Apply time range filter
             time_range = self.graph_time_combo.currentText()
+            if 'datetime' not in filtered_df.columns:
+                if 'ts_local' in filtered_df.columns:
+                    filtered_df['datetime'] = pd.to_datetime(filtered_df['ts_local'], errors='coerce')
+                elif 'ts_utc' in filtered_df.columns:
+                    filtered_df['datetime'] = pd.to_datetime(filtered_df['ts_utc'], errors='coerce')
+                elif 'timestamp' in filtered_df.columns:
+                    filtered_df['datetime'] = pd.to_datetime(filtered_df['timestamp'], errors='coerce')
+            if 'datetime' in filtered_df.columns:
+                filtered_df = filtered_df.dropna(subset=['datetime'])
             filtered_df = self._filter_events_by_time_range(filtered_df, time_range)
             
             config = {
@@ -1861,9 +1894,10 @@ class VisualizationsTab(QWidget):
         # Update config to use filtered dataframe
         config['filtered_df'] = filtered_df
         config['cache_key'] = cache_key
+        self._last_config = dict(config)
         
         # Create and start worker
-        self.worker = VisualizationWorker(self.events_df, viz_type, config)
+        self.worker = VisualizationWorker(filtered_df, viz_type, config)
         self.worker.finished.connect(lambda fig: self._display_viz(viz_type, fig))
         self.worker.error.connect(self._on_viz_error)
         self.worker.progress.connect(self._on_viz_progress)
@@ -1907,43 +1941,23 @@ class VisualizationsTab(QWidget):
         if cache_key and CACHE_ENABLED:
             canvas.set_cached(cache_key, figure)
         
-        if canvas.figure and canvas.canvas:
-            import io
-            buf = io.BytesIO()
+        if MATPLOTLIB_AVAILABLE:
             try:
-                figure.savefig(buf, format='png', dpi=EXPORT_DPI_PREVIEW, bbox_inches='tight')
-                buf.seek(0)
-                # Clear and display as image
-                canvas.figure.clear()
-                ax = canvas.figure.add_subplot(111)
-                ax.axis('off')
-                # Load image from buffer
-                try:
-                    from PIL import Image
-                except ImportError:
-                    ax.text(
-                        0.5, 0.5,
-                        "❌ Pillow not installed\n\n"
-                        "💡 Install with: pip install pillow\n\n"
-                        "Required for chart rendering.",
-                        ha='center', va='center', fontsize=12, color='#e74c3c'
-                    )
-                    canvas.canvas.draw()
-                    self.lbl_status.setText("⚠️ Missing dependency")
-                    self.lbl_status.setStyleSheet("color: #f57c00; font-weight: bold;")
-                    return
-                img = Image.open(buf)
-                ax.imshow(img)
+                if canvas.canvas is not None:
+                    canvas.layout.removeWidget(canvas.canvas)
+                    canvas.canvas.deleteLater()
+
+                canvas.figure = figure
+                canvas.canvas = FigureCanvas(canvas.figure)
+                canvas.layout.addWidget(canvas.canvas)
                 canvas.canvas.draw()
-                
-                # Update status
+
                 self.lbl_status.setText(f"✅ {viz_type.title()} ready")
                 self.lbl_status.setStyleSheet("color: #689f38; font-weight: bold;")
             except Exception as e:
                 self.logger.error(f"Failed to render visualization: {e}")
                 self.lbl_status.setText("❌ Render failed")
                 self.lbl_status.setStyleSheet("color: #d32f2f; font-weight: bold;")
-            buf.close()
         
         self.logger.info(f"{viz_type} visualization displayed")
     

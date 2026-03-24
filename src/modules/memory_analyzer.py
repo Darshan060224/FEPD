@@ -26,12 +26,36 @@ class MemoryAnalyzer:
         self.IP_PATTERN = rb'(?:\d{1,3}\.){3}\d{1,3}'
         self.URL_PATTERN = rb'https?://[^\x00\x20]{4,256}'
         self.REGISTRY_KEY_PATTERN = rb'HKEY_[A-Z_]+\\[^\x00]{4,256}'
+        self.CMD_HISTORY_PATTERN = rb'(?i)(?:cmd\.exe|powershell(?:\.exe)?)\s+[^\r\n\x00]{3,512}'
+        self.POWERSHELL_SCRIPTBLOCK_PATTERN = rb'(?i)(?:IEX|Invoke-Expression|DownloadString|FromBase64String)[^\r\n\x00]{0,512}'
+        self.NTLM_HASH_PATTERN = rb'(?i)\b[a-f0-9]{32}\b'
+        self.CREDENTIAL_KEYWORDS = [
+            b'password',
+            b'passwd',
+            b'credential',
+            b'ntlm',
+            b'lsass',
+            b'sekurlsa',
+        ]
         
     def scan_chunk(self, offset: int, chunk_size: int = 1024 * 1024) -> bytes:
         """Read a chunk of memory at given offset."""
         with open(self.mem_path, 'rb') as f:
             f.seek(offset)
             return f.read(chunk_size)
+
+    def _iter_chunks(self, scan_limit: Optional[int] = None, chunk_size: int = 10 * 1024 * 1024):
+        """Yield (offset, chunk) pairs from a single sequential file stream."""
+        limit = min(self.file_size, scan_limit) if scan_limit else self.file_size
+        offset = 0
+        with open(self.mem_path, 'rb') as f:
+            while offset < limit:
+                to_read = min(chunk_size, limit - offset)
+                chunk = f.read(to_read)
+                if not chunk:
+                    break
+                yield offset, chunk
+                offset += len(chunk)
     
     def extract_processes(self) -> List[Dict]:
         """
@@ -45,11 +69,9 @@ class MemoryAnalyzer:
         
         # Scan in 10MB chunks
         chunk_size = 10 * 1024 * 1024
-        
-        for offset in range(0, self.file_size, chunk_size):
+
+        for offset, chunk in self._iter_chunks(chunk_size=chunk_size):
             try:
-                chunk = self.scan_chunk(offset, chunk_size)
-                
                 # Find process names (*.exe)
                 for match in re.finditer(self.PROCESS_NAME_PATTERN, chunk):
                     proc_name = match.group().decode('ascii', errors='ignore').strip('\x00')
@@ -89,6 +111,34 @@ class MemoryAnalyzer:
         
         self.logger.info(f"Total processes found: {len(processes)}")
         return processes
+
+    def extract_processes_limited(self, max_scan_bytes: int) -> List[Dict]:
+        """Extract process artifacts from the first N bytes of memory."""
+        if max_scan_bytes <= 0:
+            return []
+
+        processes = []
+        seen_names = set()
+        scan_limit = min(self.file_size, max_scan_bytes)
+        chunk_size = 10 * 1024 * 1024
+
+        for offset, chunk in self._iter_chunks(scan_limit=scan_limit, chunk_size=chunk_size):
+            try:
+                for match in re.finditer(self.PROCESS_NAME_PATTERN, chunk):
+                    proc_name = match.group().decode('ascii', errors='ignore').strip('\x00')
+                    if not proc_name or proc_name in seen_names:
+                        continue
+                    seen_names.add(proc_name)
+                    processes.append({
+                        'name': proc_name,
+                        'pid': 'unknown',
+                        'offset': hex(offset + match.start()),
+                        'first_seen': datetime.now().isoformat(),
+                    })
+            except Exception:
+                continue
+
+        return processes
     
     def extract_network_connections(self) -> List[Dict]:
         """
@@ -99,11 +149,9 @@ class MemoryAnalyzer:
         seen_ips = set()
         
         chunk_size = 10 * 1024 * 1024
-        
-        for offset in range(0, self.file_size, chunk_size):
+
+        for offset, chunk in self._iter_chunks(chunk_size=chunk_size):
             try:
-                chunk = self.scan_chunk(offset, chunk_size)
-                
                 # Find IP addresses
                 for match in re.finditer(self.IP_PATTERN, chunk):
                     ip = match.group().decode('ascii', errors='ignore')
@@ -142,6 +190,37 @@ class MemoryAnalyzer:
         
         self.logger.info(f"Total network artifacts found: {len(connections)}")
         return connections
+
+    def extract_network_connections_limited(self, max_scan_bytes: int) -> List[Dict]:
+        """Extract network artifacts from the first N bytes of memory."""
+        if max_scan_bytes <= 0:
+            return []
+
+        connections = []
+        seen_ips = set()
+        scan_limit = min(self.file_size, max_scan_bytes)
+        chunk_size = 10 * 1024 * 1024
+
+        for offset, chunk in self._iter_chunks(scan_limit=scan_limit, chunk_size=chunk_size):
+            try:
+                for match in re.finditer(self.IP_PATTERN, chunk):
+                    ip = match.group().decode('ascii', errors='ignore')
+                    if ip in seen_ips or ip.startswith('0.'):
+                        continue
+                    parts = ip.split('.')
+                    if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+                        continue
+                    seen_ips.add(ip)
+                    connections.append({
+                        'ip': ip,
+                        'port': 'unknown',
+                        'offset': hex(offset + match.start()),
+                        'protocol': 'TCP/UDP',
+                    })
+            except Exception:
+                continue
+
+        return connections
     
     def extract_urls(self) -> List[str]:
         """Extract URLs from memory dump."""
@@ -149,11 +228,9 @@ class MemoryAnalyzer:
         seen_urls = set()
         
         chunk_size = 10 * 1024 * 1024
-        
-        for offset in range(0, self.file_size, chunk_size):
+
+        for _, chunk in self._iter_chunks(chunk_size=chunk_size):
             try:
-                chunk = self.scan_chunk(offset, chunk_size)
-                
                 for match in re.finditer(self.URL_PATTERN, chunk):
                     url = match.group().decode('ascii', errors='ignore')
                     if url not in seen_urls and len(url) > 10:
@@ -172,11 +249,9 @@ class MemoryAnalyzer:
         seen_keys = set()
         
         chunk_size = 10 * 1024 * 1024
-        
-        for offset in range(0, self.file_size, chunk_size):
+
+        for _, chunk in self._iter_chunks(chunk_size=chunk_size):
             try:
-                chunk = self.scan_chunk(offset, chunk_size)
-                
                 for match in re.finditer(self.REGISTRY_KEY_PATTERN, chunk):
                     key = match.group().decode('ascii', errors='ignore')
                     if key not in seen_keys:
@@ -201,11 +276,9 @@ class MemoryAnalyzer:
         current_string = bytearray()
         
         chunk_size = 10 * 1024 * 1024
-        
-        for offset in range(0, self.file_size, chunk_size):
+
+        for offset, chunk in self._iter_chunks(chunk_size=chunk_size):
             try:
-                chunk = self.scan_chunk(offset, chunk_size)
-                
                 for byte in chunk:
                     if 32 <= byte <= 126:  # Printable ASCII
                         current_string.append(byte)
@@ -226,6 +299,132 @@ class MemoryAnalyzer:
         
         self.logger.info(f"Total strings extracted: {len(strings)}")
         return strings
+
+    def extract_command_history(self, max_results: int = 5000, max_scan_bytes: Optional[int] = None) -> List[Dict]:
+        """
+        Extract command-line traces from memory.
+
+        Returns command artifacts including cmd.exe and PowerShell traces.
+        """
+        commands = []
+        seen = set()
+        chunk_size = 10 * 1024 * 1024
+
+        scan_limit = min(self.file_size, max_scan_bytes) if max_scan_bytes else self.file_size
+        for offset, chunk in self._iter_chunks(scan_limit=scan_limit, chunk_size=chunk_size):
+            try:
+                for pattern, label in [
+                    (self.CMD_HISTORY_PATTERN, 'shell_command'),
+                    (self.POWERSHELL_SCRIPTBLOCK_PATTERN, 'powershell_indicator'),
+                ]:
+                    for match in re.finditer(pattern, chunk):
+                        cmd = match.group().decode('utf-8', errors='ignore').strip('\x00').strip()
+                        if not cmd or cmd in seen:
+                            continue
+                        seen.add(cmd)
+                        commands.append({
+                            'type': label,
+                            'command': cmd,
+                            'offset': hex(offset + match.start()),
+                        })
+                        if len(commands) >= max_results:
+                            return commands
+            except Exception:
+                continue
+
+        return commands
+
+    def extract_credential_indicators(self, max_results: int = 2000, max_scan_bytes: Optional[int] = None) -> List[Dict]:
+        """
+        Extract credential-related indicators from memory content.
+
+        This does not guarantee valid credentials, but provides leads for investigation.
+        """
+        indicators = []
+        chunk_size = 10 * 1024 * 1024
+
+        scan_limit = min(self.file_size, max_scan_bytes) if max_scan_bytes else self.file_size
+        for offset, chunk in self._iter_chunks(scan_limit=scan_limit, chunk_size=chunk_size):
+            try:
+                # NTLM-like 32-hex sequences
+                for match in re.finditer(self.NTLM_HASH_PATTERN, chunk):
+                    value = match.group().decode('ascii', errors='ignore').lower()
+                    indicators.append({
+                        'type': 'hash_indicator',
+                        'value': value,
+                        'offset': hex(offset + match.start()),
+                    })
+                    if len(indicators) >= max_results:
+                        return indicators
+
+                lowered = chunk.lower()
+                for keyword in self.CREDENTIAL_KEYWORDS:
+                    idx = lowered.find(keyword)
+                    if idx != -1:
+                        snippet_start = max(0, idx - 64)
+                        snippet_end = min(len(chunk), idx + 192)
+                        snippet = chunk[snippet_start:snippet_end].decode('utf-8', errors='ignore')
+                        indicators.append({
+                            'type': 'credential_keyword_context',
+                            'keyword': keyword.decode('ascii', errors='ignore'),
+                            'context': snippet,
+                            'offset': hex(offset + idx),
+                        })
+                        if len(indicators) >= max_results:
+                            return indicators
+
+            except Exception:
+                continue
+
+        return indicators
+
+    def reconstruct_live_state(
+        self,
+        expected_executables: Optional[List[str]] = None,
+        max_scan_bytes: Optional[int] = None,
+    ) -> Dict:
+        """
+        Build a unified memory live-state view for correlation pipeline.
+
+        Args:
+            expected_executables: Optional list of executable names seen on disk artifacts.
+        """
+        if max_scan_bytes and max_scan_bytes > 0:
+            processes = self.extract_processes_limited(max_scan_bytes=max_scan_bytes)
+            connections = self.extract_network_connections_limited(max_scan_bytes=max_scan_bytes)
+            commands = self.extract_command_history(max_scan_bytes=max_scan_bytes)
+            credential_indicators = self.extract_credential_indicators(max_scan_bytes=max_scan_bytes)
+        else:
+            processes = self.extract_processes()
+            connections = self.extract_network_connections()
+            commands = self.extract_command_history()
+            credential_indicators = self.extract_credential_indicators()
+
+        expected_set = {e.lower() for e in (expected_executables or []) if e}
+        memory_processes = {p.get('name', '').lower() for p in processes if p.get('name')}
+
+        memory_only_processes = sorted(
+            p for p in memory_processes
+            if p and expected_set and p not in expected_set
+        )
+
+        return {
+            'file': self.mem_path,
+            'size_bytes': self.file_size,
+            'analysis_time': datetime.now().isoformat(),
+            'processes': processes,
+            'network_connections': connections,
+            'command_history': commands,
+            'credential_indicators': credential_indicators,
+            'memory_only_processes': memory_only_processes,
+            'summary': {
+                'process_count': len(processes),
+                'network_count': len(connections),
+                'command_count': len(commands),
+                'credential_indicator_count': len(credential_indicators),
+                'memory_only_process_count': len(memory_only_processes),
+            },
+        }
     
     def quick_scan(self) -> Dict:
         """
@@ -251,8 +450,7 @@ class MemoryAnalyzer:
         seen_procs = set()
         seen_ips = set()
         
-        for offset in range(0, quick_scan_size, chunk_size):
-            chunk = self.scan_chunk(offset, chunk_size)
+        for offset, chunk in self._iter_chunks(scan_limit=quick_scan_size, chunk_size=chunk_size):
             
             # Quick process scan
             for match in re.finditer(self.PROCESS_NAME_PATTERN, chunk):

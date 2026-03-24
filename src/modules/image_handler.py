@@ -18,6 +18,8 @@ Libraries:
 
 import logging
 import hashlib
+import os
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any, BinaryIO
 from datetime import datetime
@@ -136,7 +138,7 @@ class DiskImageHandler:
             
             if ext in ['.e01', '.ex01']:
                 return self._open_ewf_image()
-            elif ext in ['.dd', '.raw', '.img', '.001']:
+            elif ext in ['.dd', '.raw', '.img', '.001', '.mddramimage']:
                 return self._open_raw_image()
             else:
                 self.logger.warning(f"Unknown image extension: {ext}, attempting raw")
@@ -207,6 +209,8 @@ class DiskImageHandler:
         if not filenames:
             self.logger.error(f"No E01 segments found for {self.image_path}")
             return False
+
+        filenames = self._augment_ewf_segments(filenames)
         
         self.logger.info(f"Found {len(filenames)} E01 segment(s)")
         
@@ -222,6 +226,24 @@ class DiskImageHandler:
         # Get image metadata
         self.image_size = ewf_handle.get_media_size()
         self.image_type = 'ewf'
+
+        # Fail fast for incomplete segment sets: touch the tail byte now so we don't
+        # discover missing segments much later during filesystem traversal.
+        if self.image_size > 0:
+            try:
+                ewf_handle.seek(self.image_size - 1)
+                _ = ewf_handle.read(1)
+            except Exception as tail_error:
+                self.logger.error(
+                    "E01/EWF image appears incomplete. Required segment(s) are missing. "
+                    "Ensure all split parts (E01, E02, ...) are present in one folder. Details: %s",
+                    tail_error,
+                )
+                try:
+                    ewf_handle.close()
+                except Exception:
+                    pass
+                return False
         
         # Verify hash if requested
         if self.verify_hash:
@@ -241,6 +263,55 @@ class DiskImageHandler:
         
         self.logger.info(f"E01 image opened: {self.image_size:,} bytes")
         return True
+
+    def _augment_ewf_segments(self, filenames: List[str]) -> List[str]:
+        """Augment pyewf-discovered segment list with additional E?? files in common roots."""
+        if not filenames:
+            return filenames
+
+        first = Path(filenames[0])
+        base = first.stem
+        seg_re = re.compile(rf"^{re.escape(base)}\.E(\d{{2,3}})$", re.IGNORECASE)
+
+        discovered: Dict[str, Path] = {}
+        for raw in filenames:
+            p = Path(raw)
+            m = seg_re.match(p.name)
+            if not m:
+                continue
+            discovered[m.group(1)] = p
+
+        search_roots: List[Path] = [
+            first.parent,
+            Path.cwd() / "data" / "LoneWolf_Image_Files",
+            Path.cwd() / "data",
+            Path.cwd() / "cases",
+        ]
+
+        for root in search_roots:
+            if not root.exists() or not root.is_dir():
+                continue
+            try:
+                for candidate in root.glob(f"{base}.E*"):
+                    if not candidate.is_file():
+                        continue
+                    m = seg_re.match(candidate.name)
+                    if not m:
+                        continue
+                    discovered[m.group(1)] = candidate
+            except Exception:
+                continue
+
+        if len(discovered) <= len(filenames):
+            return filenames
+
+        ordered = [str(discovered[k]) for k in sorted(discovered.keys(), key=lambda s: int(s))]
+        self.logger.info(
+            "Augmented EWF segment set from %s to %s part(s)",
+            len(filenames),
+            len(ordered),
+        )
+        return ordered
     
     def _open_raw_image(self) -> bool:
         """
@@ -568,7 +639,13 @@ class DiskImageHandler:
             return entries
             
         except Exception as e:
-            self.logger.error(f"Failed to list directory {path}: {e}")
+            # Path probing across heterogeneous partitions is expected to miss often.
+            # Keep truly unexpected failures as warnings and suppress routine misses.
+            msg = str(e)
+            if "path not found" in msg.lower() or "unable to open directory" in msg.lower():
+                self.logger.debug(f"Directory not present on this partition: {path}")
+            else:
+                self.logger.warning(f"Failed to list directory {path}: {e}")
             return []
     
     def find_file(self, fs_info: pytsk3.FS_Info, filename: str, 
@@ -613,8 +690,12 @@ class DiskImageHandler:
         
         return found_paths
     
-    def extract_raw_partition_data(self, partition_index: int, output_path: Path, 
-                                   max_size: int = 100 * 1024 * 1024) -> bool:
+    def extract_raw_partition_data(
+        self,
+        partition_index: int,
+        output_path: Path,
+        max_size: Optional[int] = None,
+    ) -> bool:
         """
         Extract raw binary data from a partition when filesystem can't be mounted.
         Useful for Android/mobile images or corrupted filesystems.
@@ -622,7 +703,7 @@ class DiskImageHandler:
         Args:
             partition_index: Index of partition to extract
             output_path: Path to write raw partition data
-            max_size: Maximum bytes to extract (default 100MB for safety)
+            max_size: Maximum bytes to extract; None means full partition
             
         Returns:
             True if successful
@@ -645,7 +726,9 @@ class DiskImageHandler:
             return False
         
         offset = partition['start'] * 512
-        length = min(partition['length'] * 512, max_size)
+        length = partition['length'] * 512
+        if max_size and max_size > 0:
+            length = min(length, max_size)
         
         self.logger.info(f"Extracting raw data from partition {partition_index}: {length:,} bytes")
         
@@ -675,7 +758,9 @@ class DiskImageHandler:
     
     def carve_files_from_partition(self, partition_index: int, output_dir: Path,
                                   file_signatures: Dict[str, bytes] = None,
-                                  progress_callback=None) -> int:
+                                  progress_callback=None,
+                                  max_bytes: Optional[int] = None,
+                                  max_files: Optional[int] = None) -> int:
         """
         Carve files from raw partition data using file signatures.
         Useful when filesystem can't be mounted (Android/mobile images).
@@ -703,12 +788,24 @@ class DiskImageHandler:
         partition = self.partitions[partition_index]
         offset = partition['start'] * 512
         length = partition['length'] * 512
-        
-        # Limit carving to reasonable size (100MB max for speed)
-        max_carve_size = 100 * 1024 * 1024
-        if length > max_carve_size:
-            self.logger.warning(f"Partition too large ({length:,} bytes), limiting to {max_carve_size:,} bytes")
-            length = max_carve_size
+
+        env_max_bytes_raw = os.getenv("FEPD_CARVE_MAX_BYTES", "").strip()
+        env_max_bytes: Optional[int] = None
+        if env_max_bytes_raw:
+            try:
+                parsed = int(env_max_bytes_raw)
+                env_max_bytes = parsed if parsed > 0 else None
+            except ValueError:
+                env_max_bytes = None
+
+        effective_max_bytes = max_bytes if max_bytes is not None else env_max_bytes
+        if effective_max_bytes and effective_max_bytes > 0 and length > effective_max_bytes:
+            self.logger.warning(
+                "Partition too large (%s bytes), limiting carve scan to %s bytes",
+                f"{length:,}",
+                f"{effective_max_bytes:,}",
+            )
+            length = effective_max_bytes
         
         self.logger.info(f"Carving files from partition {partition_index}: {length:,} bytes")
         
@@ -720,9 +817,18 @@ class DiskImageHandler:
             chunk_size = 5 * 1024 * 1024  # 5MB chunks (faster)
             buffer = b''
             bytes_read = 0
-            max_files = 50  # Limit to 50 files for speed
+            env_max_files_raw = os.getenv("FEPD_CARVE_MAX_FILES", "").strip()
+            env_max_files: Optional[int] = None
+            if env_max_files_raw:
+                try:
+                    parsed = int(env_max_files_raw)
+                    env_max_files = parsed if parsed > 0 else None
+                except ValueError:
+                    env_max_files = None
+
+            max_files_limit = max_files if max_files is not None else env_max_files
             
-            while bytes_read < length and carved_count < max_files:
+            while bytes_read < length and (max_files_limit is None or carved_count < max_files_limit):
                 read_size = min(chunk_size, length - bytes_read)
                 
                 # Report progress
@@ -746,7 +852,7 @@ class DiskImageHandler:
                 
                 for ext, signature in file_signatures.items():
                     pos = search_start
-                    while carved_count < max_files:
+                    while max_files_limit is None or carved_count < max_files_limit:
                         pos = buffer.find(signature, pos)
                         if pos == -1:
                             break
@@ -809,7 +915,7 @@ class DiskImageHandler:
     
     def extract_file_fast(self, fs_info: 'pytsk3.FS_Info', path: str, 
                           output_path: Path, calculate_hash: bool = False,
-                          max_file_size: int = 100 * 1024 * 1024) -> Optional[Dict[str, Any]]:
+                          max_file_size: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """
         Fast file extraction without logging each file (for batch operations).
         Skips hash calculation by default for speed.
@@ -819,7 +925,7 @@ class DiskImageHandler:
             path: Path to file in image
             output_path: Local path to write extracted file
             calculate_hash: Whether to calculate hashes (default False for speed)
-            max_file_size: Maximum file size to extract (default 100MB)
+            max_file_size: Maximum file size to extract; None means no cap
             
         Returns:
             Dictionary with extraction metadata or None on failure
@@ -830,7 +936,9 @@ class DiskImageHandler:
                 return None
             
             file_size = file_obj.info.meta.size
-            if file_size <= 0 or file_size > max_file_size:
+            if file_size <= 0:
+                return None
+            if max_file_size and max_file_size > 0 and file_size > max_file_size:
                 return None
             
             output_path.parent.mkdir(parents=True, exist_ok=True)

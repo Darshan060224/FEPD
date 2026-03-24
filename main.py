@@ -68,7 +68,7 @@ def main():
         logger.info("Initializing main window (disabled)...")
         main_window = MainWindow(config)
         main_window.setEnabled(False)  # Disable interaction until case is loaded
-        main_window.show()
+        main_window.showFullScreen()
         
         # Process events to ensure window is visible
         app.processEvents()

@@ -525,6 +525,77 @@ class ConfigurationTab(QWidget):
             self.txt_software_hive.setText(str(software_hive))
         self._on_extract()
 
+    def apply_forensic_section(self, section_name: str, fields: dict):
+        """Populate UI directly from routed forensic section payloads.
+
+        This is used when parsed evidence is already available and we do not need
+        manual hive extraction through the top browse controls.
+        """
+        if not isinstance(fields, dict):
+            return
+
+        section = str(section_name or "").strip()
+
+        if section == "System Information":
+            for label, widget in self._sys_fields.items():
+                widget.setText(str(fields.get(label) or "—"))
+        elif section == "Hardware Information":
+            for label, widget in self._hw_fields.items():
+                widget.setText(str(fields.get(label) or "—"))
+        elif section == "Network Configuration":
+            self.table_network.setRowCount(1)
+            ordered = [
+                fields.get("Adapter Name"),
+                fields.get("IP Address"),
+                fields.get("MAC Address"),
+                fields.get("DNS Servers"),
+                fields.get("Gateway"),
+                fields.get("DHCP Enabled"),
+                fields.get("DHCP Server"),
+                fields.get("Domain"),
+            ]
+            for col, val in enumerate(ordered):
+                self.table_network.setItem(0, col, QTableWidgetItem(str(val) if val not in (None, "") else "—"))
+            self.lbl_net_count.setText("Adapters: 1")
+        elif section == "Installed Software":
+            programs = fields.get("programs") if isinstance(fields.get("programs"), list) else []
+            self.table_software.setSortingEnabled(False)
+            self.table_software.setRowCount(len(programs))
+            for row, prog in enumerate(programs):
+                self.table_software.setItem(row, 0, QTableWidgetItem(str(prog.get("name") or "—")))
+                self.table_software.setItem(row, 1, QTableWidgetItem(str(prog.get("version") or "—")))
+                self.table_software.setItem(row, 2, QTableWidgetItem(str(prog.get("publisher") or "—")))
+                self.table_software.setItem(row, 3, QTableWidgetItem(str(prog.get("install_date") or "—")))
+                self.table_software.setItem(row, 4, QTableWidgetItem(str(prog.get("path") or "—")))
+            self.table_software.setSortingEnabled(True)
+            self.lbl_sw_count.setText(f"Programs: {len(programs)}")
+        elif section == "Services":
+            services = fields.get("services") if isinstance(fields.get("services"), list) else []
+            self.table_services.setSortingEnabled(False)
+            self.table_services.setRowCount(len(services))
+            for row, svc in enumerate(services):
+                self.table_services.setItem(row, 0, QTableWidgetItem(str(svc.get("name") or "—")))
+                self.table_services.setItem(row, 1, QTableWidgetItem(str(svc.get("display_name") or "—")))
+                self.table_services.setItem(row, 2, QTableWidgetItem(str(svc.get("startup_type") or "—")))
+                self.table_services.setItem(row, 3, QTableWidgetItem(str(svc.get("path") or "—")))
+                self.table_services.setItem(row, 4, QTableWidgetItem(str(svc.get("risk_level") or "")))
+            self.table_services.setSortingEnabled(True)
+            self.lbl_svc_count.setText(f"Services: {len(services)}")
+        elif section == "Security Configuration":
+            mapping = {
+                "Firewall": fields.get("Firewall Status"),
+                "Windows Defender": fields.get("Windows Defender Status"),
+                "UAC": fields.get("UAC Level"),
+                "Audit Policy": fields.get("Audit Policy"),
+                "Antivirus": fields.get("Antivirus"),
+            }
+            for label, value in mapping.items():
+                widget = self._sec_fields.get(label)
+                if widget is not None:
+                    widget.setText(str(value) if value not in (None, "") else "—")
+
+        self.lbl_status.setText("Configuration updated from parsed forensic evidence.")
+
     def get_config(self) -> Optional[SystemConfiguration]:
         """Return the extracted configuration, or None."""
         return self._config
