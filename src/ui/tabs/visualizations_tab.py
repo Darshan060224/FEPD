@@ -118,7 +118,7 @@ VIZ_PRESETS: Dict[str, Dict[str, Any]] = {
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QGroupBox, QComboBox, QSpinBox, QGridLayout,
+    QLabel, QGroupBox, QComboBox, QSpinBox, QGridLayout, QSizePolicy,
     QCheckBox, QFileDialog, QTabWidget, QScrollArea,
     QSplitter
 )
@@ -722,6 +722,12 @@ class VisualizationsTab(QWidget):
             f"background-color: {color}; color: white; font-weight: bold; "
             "border-radius: 4px; padding: 6px 10px;"
         )
+
+    def _style_info_label(self, label: QLabel) -> None:
+        """Keep tab info labels compact and top-aligned (avoid large blank gaps)."""
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
     
     def _create_heatmap_tab(self) -> QWidget:
         """Create Heatmap visualization tab."""
@@ -733,6 +739,7 @@ class VisualizationsTab(QWidget):
         info_label = QLabel(
             "Activity Intensity Heatmap - Shows when activity occurred across time periods"
         )
+        self._style_info_label(info_label)
         layout.addWidget(info_label)
         
         # Controls
@@ -807,6 +814,7 @@ class VisualizationsTab(QWidget):
         info_label = QLabel(
             "Network & Entity Relationships - Shows connections between users, processes, files, and network destinations"
         )
+        self._style_info_label(info_label)
         layout.addWidget(info_label)
         
         # Controls
@@ -869,6 +877,7 @@ class VisualizationsTab(QWidget):
         info_label = QLabel(
             "Interactive Timeline - Event frequency over time with category breakdowns"
         )
+        self._style_info_label(info_label)
         layout.addWidget(info_label)
         
         # Controls
@@ -1001,6 +1010,7 @@ class VisualizationsTab(QWidget):
         info_label = QLabel(
             "Artifact Distribution - Shows breakdown of collected artifacts by type"
         )
+        self._style_info_label(info_label)
         layout.addWidget(info_label)
         
         # Controls
@@ -1062,6 +1072,7 @@ class VisualizationsTab(QWidget):
         info_label = QLabel(
             "Severity Analysis - Shows distribution of event severity levels over time"
         )
+        self._style_info_label(info_label)
         layout.addWidget(info_label)
         
         # Controls
@@ -1120,6 +1131,7 @@ class VisualizationsTab(QWidget):
         info_label = QLabel(
             "User Activity Analysis - Shows user behavior patterns and activity levels"
         )
+        self._style_info_label(info_label)
         layout.addWidget(info_label)
         
         # Controls

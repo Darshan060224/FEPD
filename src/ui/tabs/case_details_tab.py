@@ -64,13 +64,25 @@ class CaseDetailsTab(QWidget):
     def _merge_case_metadata(self, incoming: dict) -> dict:
         """Merge incoming metadata with case.json fallback to avoid blank fields."""
         merged = dict(incoming or {})
-        case_json = self.case_path / "case.json"
         file_meta = {}
-        if case_json.exists():
+        for meta_name in ("case.json", "metadata.json", "case_metadata.json", "config.json"):
+            meta_path = self.case_path / meta_name
+            if not meta_path.exists():
+                continue
             try:
-                file_meta = json.loads(case_json.read_text(encoding="utf-8"))
+                payload = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    file_meta.update({k: v for k, v in payload.items() if v not in (None, "")})
             except Exception as exc:
-                logger.debug("Could not load case.json metadata: %s", exc)
+                logger.debug("Could not load %s metadata: %s", meta_name, exc)
+
+        # Normalize common alternate key names to keep the dashboard populated.
+        if not file_meta.get("investigator") and file_meta.get("operator"):
+            file_meta["investigator"] = file_meta.get("operator")
+        if not file_meta.get("created_date") and file_meta.get("created_at"):
+            file_meta["created_date"] = file_meta.get("created_at")
+        if not file_meta.get("last_modified") and file_meta.get("updated_at"):
+            file_meta["last_modified"] = file_meta.get("updated_at")
 
         for key in ("case_id", "case_name", "investigator", "created_date", "last_modified", "status"):
             if not merged.get(key):
@@ -90,8 +102,20 @@ class CaseDetailsTab(QWidget):
         if merged_ev:
             merged["evidence_image"] = merged_ev
 
+        # config.json can store image_path directly without evidence_image object.
+        if not merged_ev and isinstance(file_meta.get("image_path"), str) and file_meta.get("image_path"):
+            image_path = file_meta.get("image_path")
+            merged["evidence_image"] = {
+                "path": image_path,
+                "filename": Path(image_path).name,
+            }
+
         if not merged.get("case_id"):
             merged["case_id"] = self.case_path.name
+        if not merged.get("case_name"):
+            merged["case_name"] = merged.get("case_id", self.case_path.name)
+        if not merged.get("status"):
+            merged["status"] = "open"
         return merged
 
     # ════════════════════════════════════════════════════════════════

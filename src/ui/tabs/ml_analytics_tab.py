@@ -1425,22 +1425,45 @@ Detection Threshold: {anomalies.get('threshold_used', 'N/A')}
         user_rows = []
 
         for finding in findings:
-            name = str(finding.get('name') or 'unknown')
+            name = str(
+                finding.get('name')
+                or finding.get('affected_artifact')
+                or finding.get('path')
+                or 'unknown'
+            )
             reason = str(finding.get('reason') or '')
             reason_lower = reason.lower()
             risk = float(finding.get('risk_score') or 0)
-            ftype = str(finding.get('type') or '').lower()
+            ftype = str(finding.get('type') or finding.get('finding_type') or '').lower()
             if not ftype:
                 ftype = 'file'
+
+            lowered_name = name.lower()
+            has_path_hint = any(tok in lowered_name for tok in ("\\", "/"))
+            has_file_ext = "." in Path(lowered_name).name if lowered_name not in ("", "unknown") else False
+            has_file_hint = (
+                "file" in ftype
+                or "path" in ftype
+                or "artifact" in ftype
+                or "temp-path-artifact" in reason_lower
+                or "file" in reason_lower
+                or has_path_hint
+                or has_file_ext
+            )
+            has_process_hint = (
+                any(k in ftype for k in ('process', 'execution', 'command', 'detection'))
+                or any(k in reason_lower for k in ('execution-related', 'process', 'command', 'shell'))
+            )
 
             row = (name, risk, reason)
             if 'user' in ftype or 'account' in ftype:
                 user_rows.append(row)
-            elif any(k in ftype for k in ('process', 'execution', 'command', 'detection')) or any(
-                k in reason_lower for k in ('execution-related', 'process', 'command', 'shell')
-            ):
+            elif has_file_hint and not has_process_hint:
+                file_rows.append(row)
+            elif has_process_hint:
                 proc_rows.append(row)
             else:
+                # Prefer Files in ambiguous cases so this panel is not left blank.
                 file_rows.append(row)
 
         self._fill_overview_table(self.overview_proc_table, proc_rows[:10])
